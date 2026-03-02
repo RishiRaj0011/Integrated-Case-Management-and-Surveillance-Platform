@@ -125,7 +125,7 @@
                                     <th>Frame</th>
                                     <th>Timestamp</th>
                                     <th>Confidence</th>
-
+                                    <th>XAI Breakdown</th>
                                     <th>Method</th>
                                     <th>Verified</th>
                                     <th>Actions</th>
@@ -178,14 +178,50 @@
                                     </td>
                                     <td>
                                         <div class="progress" style="height: 20px;">
-                                            <div class="progress-bar bg-{{ 'success' if detection.confidence_score > 0.8 else 'warning' if detection.confidence_score > 0.6 else 'danger' }}" 
+                                            <div class="progress-bar bg-{{ 'success' if detection.confidence_score > 0.88 else 'warning' if detection.confidence_score > 0.75 else 'danger' }}" 
                                                  style="width: {{ (detection.confidence_score * 100)|round }}%">
                                                 {{ "%.1f"|format(detection.confidence_score * 100) }}%
                                             </div>
                                         </div>
+                                        {% if detection.confidence_score >= 0.88 %}
+                                        <small class="text-success"><i class="fas fa-check-circle"></i> Forensic Grade</small>
+                                        {% endif %}
                                     </td>
-
-
+                                    <td>
+                                        <!-- XAI Feature Breakdown -->
+                                        <div style="font-size: 0.85em;">
+                                            {% if detection.face_match_score %}
+                                            <div class="mb-1">
+                                                <small class="text-muted">Facial Landmarks:</small>
+                                                <div class="progress" style="height: 12px;">
+                                                    <div class="progress-bar bg-info" style="width: {{ (detection.face_match_score * 100)|round }}%">
+                                                        {{ "%.0f"|format(detection.face_match_score * 100) }}%
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endif %}
+                                            {% if detection.clothing_match_score %}
+                                            <div class="mb-1">
+                                                <small class="text-muted">Clothing Pattern:</small>
+                                                <div class="progress" style="height: 12px;">
+                                                    <div class="progress-bar bg-warning" style="width: {{ (detection.clothing_match_score * 100)|round }}%">
+                                                        {{ "%.0f"|format(detection.clothing_match_score * 100) }}%
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endif %}
+                                            {% if detection.body_pose_score %}
+                                            <div class="mb-1">
+                                                <small class="text-muted">Temporal Consistency:</small>
+                                                <div class="progress" style="height: 12px;">
+                                                    <div class="progress-bar bg-success" style="width: {{ (detection.body_pose_score * 100)|round }}%">
+                                                        {{ "%.0f"|format(detection.body_pose_score * 100) }}%
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </td>
                                     <td>
                                         <span class="badge bg-info">{{ detection.analysis_method or 'Unknown' }}</span>
                                     </td>

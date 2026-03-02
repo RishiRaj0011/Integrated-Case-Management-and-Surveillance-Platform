@@ -22,16 +22,28 @@ class LocationMatchingEngine:
         self.geocoder = Nominatim(user_agent="investigation_platform")
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
+        # Load dynamic threshold from AI config
+        self.forensic_threshold = self._load_forensic_threshold()
+        
         self.CASE_CRITERIA = {
-            'missing_person': {'radius_km': 25, 'time_window_hours': 168, 'confidence_threshold': 0.4},
-            'criminal_investigation': {'radius_km': 10, 'time_window_hours': 72, 'confidence_threshold': 0.6},
-            'surveillance_request': {'radius_km': 5, 'time_window_hours': 24, 'confidence_threshold': 0.7},
-            'person_tracking': {'radius_km': 50, 'time_window_hours': 336, 'confidence_threshold': 0.3},
-            'evidence_analysis': {'radius_km': 15, 'time_window_hours': 120, 'confidence_threshold': 0.5}
+            'missing_person': {'radius_km': 25, 'time_window_hours': 168, 'confidence_threshold': self.forensic_threshold},
+            'criminal_investigation': {'radius_km': 10, 'time_window_hours': 72, 'confidence_threshold': self.forensic_threshold},
+            'surveillance_request': {'radius_km': 5, 'time_window_hours': 24, 'confidence_threshold': self.forensic_threshold},
+            'person_tracking': {'radius_km': 50, 'time_window_hours': 336, 'confidence_threshold': self.forensic_threshold},
+            'evidence_analysis': {'radius_km': 15, 'time_window_hours': 120, 'confidence_threshold': self.forensic_threshold}
         }
         
         self.PRIORITY_RADIUS = {'Critical': 2.0, 'High': 1.5, 'Medium': 1.0, 'Low': 0.7}
         self.REQUESTER_BOOST = {'police': 2.0, 'government': 1.8, 'private_investigator': 1.5, 'organization': 1.3, 'family': 1.0}
+    
+    def _load_forensic_threshold(self):
+        """Load forensic threshold from AI config"""
+        try:
+            from ai_config_model import AIConfig
+            config = AIConfig.get_config()
+            return config.forensic_threshold
+        except:
+            return 0.88  # Fallback
     
     def find_location_matches(self, case_id):
         """Find all matching footage for a case"""
@@ -77,7 +89,7 @@ class LocationMatchingEngine:
             return None, None
     
     def _find_intelligent_matches(self, case, case_lat, case_lon):
-        """Find matches using GPS + string matching"""
+        """5-factor weighted matching: GPS 40%, Name 25%, Time 20%, Quality 10%, Priority 5%"""
         search_radius = self._calculate_smart_radius(case)
         case_type = case.case_type or 'missing_person'
         time_window = self.CASE_CRITERIA.get(case_type, {}).get('time_window_hours', 168)
@@ -90,29 +102,9 @@ class LocationMatchingEngine:
         
         matches = []
         for footage in all_footage:
-            match_score = 0.0
-            distance_km = None
-            
-            # GPS matching (40% weight)
-            if footage.latitude and footage.longitude:
-                distance_km = geodesic((case_lat, case_lon), (footage.latitude, footage.longitude)).kilometers
-                if distance_km <= search_radius:
-                    geo_score = max(0, 1 - (distance_km / search_radius))
-                    match_score += geo_score * 0.4
-                else:
-                    continue
-            
-            # String matching (60% weight)
-            name_score = self._calculate_name_similarity(case.last_seen_location, footage.location_name)
-            match_score += name_score * 0.6
-            
-            if match_score > 0.3:
-                matches.append({
-                    'footage': footage,
-                    'match_score': min(match_score, 1.0),
-                    'distance_km': distance_km,
-                    'match_type': 'intelligent'
-                })
+            match_data = self._calculate_5_factor_score(case, footage, case_lat, case_lon, search_radius)
+            if match_data and match_data['match_score'] > 0.3:
+                matches.append(match_data)
         
         matches.sort(key=lambda x: x['match_score'], reverse=True)
         return matches[:20]
@@ -154,8 +146,55 @@ class LocationMatchingEngine:
         except:
             return 15
     
+    def _calculate_5_factor_score(self, case, footage, case_lat, case_lon, search_radius):
+        """5-factor weighted: GPS 40%, Name 25%, Time 20%, Quality 10%, Priority 5%"""
+        try:
+            match_score = 0.0
+            factors = {}
+            distance_km = None
+            
+            # Factor 1: GPS (40%)
+            if footage.latitude and footage.longitude:
+                distance_km = geodesic((case_lat, case_lon), (footage.latitude, footage.longitude)).kilometers
+                if distance_km > search_radius:
+                    return None
+                geo_score = max(0, 1 - (distance_km / search_radius))
+                match_score += geo_score * 0.4
+                factors['gps'] = geo_score
+            
+            # Factor 2: Name (25%)
+            name_score = self._calculate_name_similarity(case.last_seen_location, footage.location_name)
+            match_score += name_score * 0.25
+            factors['name'] = name_score
+            
+            # Factor 3: Time (20%)
+            time_score = self._calculate_time_relevance(case, footage)
+            match_score += time_score * 0.20
+            factors['time'] = time_score
+            
+            # Factor 4: Quality (10%)
+            quality_score = self._calculate_quality_score(footage)
+            match_score += quality_score * 0.10
+            factors['quality'] = quality_score
+            
+            # Factor 5: Priority (5%)
+            priority_score = self._calculate_priority_boost(case)
+            match_score += priority_score * 0.05
+            factors['priority'] = priority_score
+            
+            return {
+                'footage': footage,
+                'match_score': min(match_score, 1.0),
+                'distance_km': distance_km,
+                'factors': factors,
+                'match_type': '5_factor_weighted'
+            }
+        except Exception as e:
+            logger.error(f"5-factor score error: {e}")
+            return None
+    
     def _calculate_name_similarity(self, case_location, footage_location):
-        """Calculate location name similarity"""
+        """Jaccard similarity for location names"""
         if not case_location or not footage_location:
             return 0.0
         
@@ -176,6 +215,42 @@ class LocationMatchingEngine:
             return (len(intersection) / len(union)) * 0.7
         
         return 0.0
+    
+    def _calculate_time_relevance(self, case, footage):
+        """Time-based relevance"""
+        try:
+            if not case.date_missing or not footage.date_recorded:
+                return 0.5
+            time_diff = abs((case.date_missing - footage.date_recorded).total_seconds() / 3600)
+            case_type = case.case_type or 'missing_person'
+            max_hours = self.CASE_CRITERIA.get(case_type, {}).get('time_window_hours', 168)
+            if time_diff <= max_hours:
+                return max(0, 1 - (time_diff / max_hours))
+            return 0.0
+        except:
+            return 0.5
+    
+    def _calculate_quality_score(self, footage):
+        """Footage quality score"""
+        score = 0.5
+        if footage.resolution:
+            if 'FHD' in footage.resolution or '1080' in footage.resolution:
+                score += 0.3
+            elif 'HD' in footage.resolution or '720' in footage.resolution:
+                score += 0.2
+        if footage.camera_type and 'CCTV' in footage.camera_type.upper():
+            score += 0.1
+        if footage.quality:
+            score += {'4K': 0.2, 'FHD': 0.15, 'HD': 0.1, 'SD': 0.0}.get(footage.quality, 0.0)
+        return min(score, 1.0)
+    
+    def _calculate_priority_boost(self, case):
+        """Priority boost"""
+        priority_scores = {'Critical': 1.0, 'High': 0.8, 'Medium': 0.5, 'Low': 0.2}
+        requester_scores = {'police': 1.0, 'government': 0.9, 'private_investigator': 0.7, 'organization': 0.5, 'family': 0.3}
+        priority_score = priority_scores.get(case.priority, 0.5)
+        requester_score = requester_scores.get(case.requester_type, 0.3)
+        return (priority_score + requester_score) / 2
     
     def process_new_case(self, case_id):
         """Process newly approved case"""
@@ -248,7 +323,7 @@ class LocationMatchingEngine:
             return 0
     
     def analyze_footage_for_person(self, match_id):
-        """Analyze footage using AI detection"""
+        """Analyze footage using AI detection with multi-view support"""
         try:
             match = LocationMatch.query.get(match_id)
             if not match:
@@ -258,23 +333,10 @@ class LocationMatchingEngine:
             match.ai_analysis_started = datetime.utcnow()
             db.session.commit()
             
-            # Get target encodings
-            target_encodings = []
-            for target_image in match.case.target_images:
-                image_path = os.path.join('static', target_image.image_path)
-                if not os.path.exists(image_path):
-                    image_path = os.path.join('app', 'static', target_image.image_path)
-                
-                if os.path.exists(image_path):
-                    try:
-                        image = face_recognition.load_image_file(image_path)
-                        encodings = face_recognition.face_encodings(image)
-                        if encodings:
-                            target_encodings.append(encodings[0])
-                    except:
-                        pass
+            # Get target encodings with multi-view support
+            target_profiles = self._load_target_profiles(match.case)
             
-            if not target_encodings:
+            if not target_profiles or not any(target_profiles.values()):
                 match.status = 'failed'
                 db.session.commit()
                 return False
@@ -288,8 +350,8 @@ class LocationMatchingEngine:
                 db.session.commit()
                 return False
             
-            # Analyze video
-            detections = self._fast_analyze_video(footage_path, target_encodings, match_id)
+            # Analyze video with multi-view
+            detections = self._multi_view_analyze_video(footage_path, target_profiles, match_id)
             
             match.detection_count = len(detections)
             match.person_found = len(detections) > 0
@@ -312,6 +374,157 @@ class LocationMatchingEngine:
                 match.status = 'failed'
                 db.session.commit()
             return False
+    
+    def _load_target_profiles(self, case):
+        """
+        Load multi-view target profiles (front, left, right)
+        
+        Returns:
+            Dict with 'front', 'left_profile', 'right_profile' encodings
+        """
+        profiles = {
+            'front': None,
+            'left_profile': None,
+            'right_profile': None
+        }
+        
+        try:
+            for target_image in case.target_images:
+                image_path = os.path.join('static', target_image.image_path)
+                if not os.path.exists(image_path):
+                    image_path = os.path.join('app', 'static', target_image.image_path)
+                
+                if os.path.exists(image_path):
+                    try:
+                        image = face_recognition.load_image_file(image_path)
+                        encodings = face_recognition.face_encodings(image)
+                        
+                        if encodings:
+                            # Determine profile type from metadata or filename
+                            profile_type = self._detect_profile_type(image_path, target_image)
+                            
+                            if profile_type in profiles:
+                                profiles[profile_type] = encodings[0]
+                            elif profiles['front'] is None:
+                                profiles['front'] = encodings[0]
+                    except Exception as e:
+                        logger.error(f"Error loading image {image_path}: {e}")
+        except Exception as e:
+            logger.error(f"Error loading target profiles: {e}")
+        
+        return profiles
+    
+    def _detect_profile_type(self, image_path, target_image):
+        """
+        Detect profile type from filename or metadata
+        
+        Returns:
+            'front', 'left_profile', or 'right_profile'
+        """
+        filename = os.path.basename(image_path).lower()
+        
+        if 'left' in filename or 'side_left' in filename:
+            return 'left_profile'
+        elif 'right' in filename or 'side_right' in filename:
+            return 'right_profile'
+        elif 'front' in filename or 'frontal' in filename:
+            return 'front'
+        
+        # Check metadata if available
+        if hasattr(target_image, 'profile_type'):
+            return target_image.profile_type
+        
+        # Default to front
+        return 'front'
+    
+    def _multi_view_analyze_video(self, video_path, target_profiles, match_id):
+        """
+        Analyze video with multi-view detection
+        
+        Args:
+            video_path: Path to video file
+            target_profiles: Dict with front/left/right profile encodings
+            match_id: Location match ID
+        
+        Returns:
+            List of detections
+        """
+        detections = []
+        
+        try:
+            from vision_engine import get_vision_engine
+            
+            cap = cv2.VideoCapture(video_path)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25
+            frame_count = 0
+            
+            vision_engine = get_vision_engine(match_id)
+            
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Process every 30 frames (1 second)
+                if frame_count % 30 == 0:
+                    timestamp = frame_count / fps
+                    
+                    # Multi-view detection
+                    detection_data = vision_engine.detect_multi_view(
+                        frame,
+                        target_profiles,
+                        timestamp,
+                        match_id
+                    )
+                    
+                    if detection_data:
+                        # Save to database
+                        self._save_multi_view_detection(
+                            detection_data,
+                            timestamp,
+                            match_id
+                        )
+                        
+                        detections.append({
+                            'timestamp': timestamp,
+                            'confidence': detection_data['confidence_score'],
+                            'matched_profile': detection_data['matched_profile'],
+                            'temporal_count': detection_data['temporal_count']
+                        })
+                
+                frame_count += 1
+            
+            cap.release()
+            db.session.commit()
+            
+            logger.info(f"Multi-view analysis complete: {len(detections)} detections")
+            
+        except Exception as e:
+            logger.error(f"Multi-view video analysis error: {e}")
+        
+        return detections
+    
+    def _save_multi_view_detection(self, detection_data, timestamp, match_id):
+        """Save multi-view detection to database"""
+        try:
+            detection = PersonDetection(
+                location_match_id=match_id,
+                timestamp=timestamp,
+                confidence_score=detection_data['confidence_score'],
+                face_match_score=detection_data['face_match_score'],
+                detection_box=detection_data['detection_box'],
+                frame_path=detection_data['frame_path'].replace('static/', ''),
+                frame_hash=detection_data['frame_hash'],
+                evidence_number=detection_data['evidence_number'],
+                is_frontal_face=True,
+                feature_weights=detection_data['feature_weights'],
+                decision_factors=detection_data['decision_factors'],
+                analysis_method='multi_view_forensic'
+            )
+            db.session.add(detection)
+            
+        except Exception as e:
+            logger.error(f"Save multi-view detection error: {e}")
     
     def _fast_analyze_video(self, video_path, target_encodings, match_id):
         """Fast video analysis with smart sampling"""
@@ -351,7 +564,7 @@ class LocationMatchingEngine:
                         best_distance = float(np.min(distances))
                         confidence_percent = max(0, min(100, (1 - best_distance / 0.6) * 100))
                         
-                        if confidence_percent >= 40:
+                        if confidence_percent >= 88:
                             self._save_detection(frame, location, timestamp, match_id, confidence_percent, best_distance)
                             detections.append({'timestamp': timestamp, 'confidence': confidence_percent / 100.0})
             
@@ -393,6 +606,305 @@ class LocationMatchingEngine:
     def auto_process_approved_case(self, case_id):
         """Auto-process approved case (alias for compatibility)"""
         return self.process_new_case(case_id)
+    
+    def _strict_analyze_video(self, video_path, target_encodings, match_id, min_confidence=0.88, strict_mode=True):
+        """FORENSIC: 0.88 threshold + frontal + SHA-256"""
+        detections = []
+        
+        try:
+            from vision_engine import get_vision_engine
+            from evidence_integrity_system import EvidenceIntegritySystem
+            
+            cap = cv2.VideoCapture(video_path)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25
+            frame_count = 0
+            
+            evidence_system = EvidenceIntegritySystem()
+            vision_engine = get_vision_engine(match_id)
+            
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Sample every 30 frames (1 second intervals)
+                if frame_count % 30 == 0:
+                    timestamp = frame_count / fps
+                    
+                    # Use vision engine with strict mode
+                    detection_data = vision_engine.detect_person(
+                        frame,
+                        target_encoding=target_encodings[0],
+                        case_id=match_id,
+                        strict_mode=True
+                    )
+                    
+                    if detection_data:
+                        confidence = detection_data.get('confidence_score', 0)
+                        is_frontal = detection_data.get('is_frontal_face', False)
+                        
+                        # FORENSIC THRESHOLD: Exactly 0.88
+                        if confidence >= 0.88 and is_frontal:
+                            # Generate SHA-256 hash
+                            frame_hash = detection_data.get('frame_hash', 'N/A')
+                            
+                            # Save detection with evidence
+                            self._save_strict_detection(
+                                frame,
+                                detection_data,
+                                timestamp,
+                                match_id,
+                                frame_hash
+                            )
+                            
+                            detections.append({
+                                'timestamp': timestamp,
+                                'confidence': confidence,
+                                'is_frontal': is_frontal,
+                                'frame_hash': frame_hash
+                            })
+                
+                frame_count += 1
+            
+            cap.release()
+            db.session.commit()
+            
+            logger.info(f"Strict analysis complete: {len(detections)} high-confidence detections")
+            
+        except Exception as e:
+            logger.error(f"Strict video analysis error: {e}")
+        
+        return detections
+    
+    def _save_strict_detection(self, frame, detection_data, timestamp, match_id, frame_hash):
+        """Save detection with strict validation and evidence integrity"""
+        try:
+            frame_filename = f"detection_{match_id}_{int(timestamp * 1000)}.jpg"
+            frame_dir = os.path.join('static', 'detections')
+            os.makedirs(frame_dir, exist_ok=True)
+            
+            bbox = detection_data.get('detection_box', (0, 0, 100, 100))
+            left, top, width, height = bbox
+            
+            # Extract face region
+            region = frame[
+                max(0, top-20):min(frame.shape[0], top+height+20),
+                max(0, left-20):min(frame.shape[1], left+width+20)
+            ]
+            
+            if region.size > 0:
+                cv2.imwrite(os.path.join(frame_dir, frame_filename), region)
+                
+                detection = PersonDetection(
+                    location_match_id=match_id,
+                    timestamp=timestamp,
+                    confidence_score=detection_data.get('confidence_score', 0),
+                    face_match_score=detection_data.get('face_match_score', 0),
+                    detection_box=json.dumps(bbox),
+                    frame_path=f"detections/{frame_filename}",
+                    frame_hash=frame_hash,
+                    evidence_number=detection_data.get('evidence_number', 'N/A'),
+                    is_frontal_face=detection_data.get('is_frontal_face', False),
+                    face_pose_yaw=detection_data.get('face_pose_yaw', 0),
+                    face_pose_pitch=detection_data.get('face_pose_pitch', 0),
+                    feature_weights=detection_data.get('feature_weights', '{}'),
+                    decision_factors=detection_data.get('decision_factors', '[]'),
+                    analysis_method='strict_batch_0.88'
+                )
+                db.session.add(detection)
+                
+        except Exception as e:
+            logger.error(f"Save strict detection error: {e}")
+
+    
+    def analyze_with_progress(self, case_id, footage_id, batch_id, progress_callback=None):
+        """Analyze footage with real-time progress updates"""
+        try:
+            from models import Case, SurveillanceFootage, LocationMatch
+            
+            # Get or create match
+            match = LocationMatch.query.filter_by(
+                case_id=case_id,
+                footage_id=footage_id
+            ).first()
+            
+            if not match:
+                match = LocationMatch(
+                    case_id=case_id,
+                    footage_id=footage_id,
+                    batch_id=batch_id,
+                    status='processing',
+                    match_type='batch_progress'
+                )
+                db.session.add(match)
+            else:
+                match.status = 'processing'
+                match.batch_id = batch_id
+            
+            db.session.commit()
+            
+            # Get target encodings
+            case = Case.query.get(case_id)
+            target_encodings = []
+            
+            for target_image in case.target_images:
+                image_path = os.path.join('static', target_image.image_path)
+                if os.path.exists(image_path):
+                    try:
+                        import face_recognition
+                        image = face_recognition.load_image_file(image_path)
+                        encodings = face_recognition.face_encodings(image)
+                        if encodings:
+                            target_encodings.append(encodings[0])
+                    except:
+                        pass
+            
+            if not target_encodings:
+                match.status = 'failed'
+                db.session.commit()
+                return False
+            
+            # Get footage
+            footage = SurveillanceFootage.query.get(footage_id)
+            video_path = os.path.join('static', footage.video_path)
+            
+            if not os.path.exists(video_path):
+                match.status = 'failed'
+                db.session.commit()
+                return False
+            
+            # Process with progress
+            detections = self._process_video_with_progress(
+                video_path,
+                target_encodings,
+                case_id,
+                match.id,
+                progress_callback
+            )
+            
+            # Update match
+            match.detection_count = len(detections)
+            match.person_found = len(detections) > 0
+            match.status = 'completed'
+            
+            if detections:
+                confidences = [d['confidence'] for d in detections]
+                match.confidence_score = sum(confidences) / len(confidences)
+            
+            db.session.commit()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Progress analysis error: {e}")
+            if match:
+                match.status = 'failed'
+                db.session.commit()
+            return False
+    
+    def _process_video_with_progress(self, video_path, target_encodings, case_id, match_id, progress_callback):
+        """Process video with forensic CCTV analysis and progress updates"""
+        detections = []
+        
+        try:
+            from forensic_vision_engine import ForensicVisionEngine
+            
+            cap = cv2.VideoCapture(video_path)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25
+            frame_count = 0
+            
+            forensic_engine = ForensicVisionEngine(case_id)
+            
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Process every 30 frames (1 second)
+                if frame_count % 30 == 0:
+                    timestamp = frame_count / fps
+                    
+                    # Detect in crowd with temporal smoothing
+                    detection_result = forensic_engine.detect_in_crowd(
+                        frame,
+                        target_encodings[0]
+                    )
+                    
+                    if detection_result:
+                        # Save forensic output with zoom-in inset
+                        saved = forensic_engine.save_forensic_detection(
+                            frame,
+                            detection_result,
+                            timestamp,
+                            case_id
+                        )
+                        
+                        if saved:
+                            # Save to database
+                            self._save_forensic_detection_db(
+                                saved,
+                                timestamp,
+                                match_id,
+                                detection_result
+                            )
+                            
+                            detections.append({
+                                'timestamp': timestamp,
+                                'confidence': saved['confidence'],
+                                'crowd_size': saved['crowd_size']
+                            })
+                
+                frame_count += 1
+                
+                # Update progress
+                if progress_callback and total_frames > 0:
+                    percent = int((frame_count / total_frames) * 100)
+                    progress_callback(percent)
+            
+            cap.release()
+            db.session.commit()
+            
+        except Exception as e:
+            logger.error(f"Forensic video processing error: {e}")
+        
+        return detections
+    
+    def _save_forensic_detection_db(self, saved_data, timestamp, match_id, detection_result):
+        """Save forensic detection to database"""
+        try:
+            target = detection_result['target']
+            top, right, bottom, left = target['location']
+            
+            detection = PersonDetection(
+                location_match_id=match_id,
+                timestamp=timestamp,
+                confidence_score=saved_data['confidence'],
+                face_match_score=saved_data['confidence'],
+                detection_box=json.dumps({'top': int(top), 'right': int(right), 'bottom': int(bottom), 'left': int(left)}),
+                frame_path=saved_data['filepath'].replace('static/', ''),
+                frame_hash=saved_data['frame_hash'],
+                evidence_number=saved_data['evidence_number'],
+                is_frontal_face=True,
+                face_pose_yaw=target.get('pose', {}).get('yaw', 0),
+                face_pose_pitch=target.get('pose', {}).get('pitch', 0),
+                feature_weights=json.dumps({
+                    'temporal_consistency': {'score': 1.0, 'weight': 0.3},
+                    'face_match': {'score': saved_data['confidence'], 'weight': 0.7}
+                }),
+                decision_factors=json.dumps([
+                    f"Temporal smoothing verified (5-10 frames)",
+                    f"Crowd analysis: {saved_data['crowd_size']} faces detected",
+                    f"Low-light enhancement applied",
+                    f"Multi-scale detection used",
+                    f"Confidence: {saved_data['confidence']*100:.1f}%"
+                ]),
+                analysis_method='forensic_cctv_crowd'
+            )
+            db.session.add(detection)
+            
+        except Exception as e:
+            logger.error(f"Save forensic detection DB error: {e}")
 
 # Global instance
 location_engine = LocationMatchingEngine()

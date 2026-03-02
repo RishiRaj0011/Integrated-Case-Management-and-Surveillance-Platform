@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from __init__ import create_app, db
 from models import Case, SurveillanceFootage, LocationMatch
-from advanced_location_matcher import advanced_matcher
+from location_matching_engine import location_engine
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class AutoLocationService:
             
             for case in approved_cases:
                 try:
-                    matches_created = advanced_matcher.auto_process_approved_case(case.id)
+                    matches_created = location_engine.auto_process_approved_case(case.id)
                     if matches_created > 0:
                         logger.info(f"Auto-processed case {case.id}: {matches_created} matches created")
                 except Exception as case_error:
@@ -92,7 +92,7 @@ class AutoLocationService:
             ).all()
             
             for footage in new_footage:
-                matches_created = advanced_matcher._process_new_footage()
+                matches_created = location_engine._process_new_footage()
                 if matches_created > 0:
                     logger.info(f"Auto-processed footage {footage.id}: {matches_created} matches created")
                     

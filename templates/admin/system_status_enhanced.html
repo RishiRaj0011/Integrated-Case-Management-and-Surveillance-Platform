@@ -1,0 +1,486 @@
+{% extends "base.html" %}
+{% block title %}System Status - Command Center{% endblock %}
+
+{% block content %}
+<style>
+.status-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 2rem 0;
+    margin-bottom: 2rem;
+}
+
+.status-card {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    margin-bottom: 1.5rem;
+    transition: transform 0.2s;
+}
+
+.status-card:hover { transform: translateY(-4px); }
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.status-online { background: #10b981; }
+.status-offline { background: #ef4444; }
+.status-warning { background: #f59e0b; }
+
+.log-terminal {
+    background: #1e293b;
+    color: #10b981;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    padding: 1rem;
+    border-radius: 8px;
+    height: 300px;
+    overflow-y: auto;
+}
+
+.log-entry {
+    margin-bottom: 4px;
+    white-space: nowrap;
+}
+
+.stat-card {
+    text-align: center;
+    padding: 1.5rem;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+
+.stat-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: #667eea;
+}
+
+.stat-label {
+    color: #64748b;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+
+.btn-refresh {
+    position: relative;
+}
+
+.btn-refresh .spinner {
+    display: none;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.btn-refresh.loading .spinner {
+    display: inline-block;
+}
+
+.btn-refresh.loading .btn-text {
+    visibility: hidden;
+}
+</style>
+
+<div class="status-header">
+    <div class="container">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <h1 class="mb-2"><i class="fas fa-heartbeat"></i> System Status</h1>
+                <p class="mb-0">Real-time monitoring and health diagnostics</p>
+            </div>
+            <div class="col-md-4 text-end">
+                <button class="btn btn-light btn-refresh" onclick="refreshStatus()">
+                    <span class="btn-text"><i class="fas fa-sync-alt"></i> Refresh Status</span>
+                    <span class="spinner spinner-border spinner-border-sm"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="container">
+    <!-- System Health Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="status-card">
+                <div class="card-body">
+                    <h6 class="text-muted mb-3">Database</h6>
+                    <div class="d-flex align-items-center justify-content-between">
+                        <span class="status-indicator {% if db_status == 'Connected' %}status-online{% else %}status-offline{% endif %}"></span>
+                        <strong id="dbStatus">{{ db_status }}</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="status-card">
+                <div class="card-body">
+                    <h6 class="text-muted mb-3">Redis Cache</h6>
+                    <div class="d-flex align-items-center justify-content-between">
+                        <span class="status-indicator {% if redis_status == 'Connected' %}status-online{% else %}status-offline{% endif %}"></span>
+                        <strong id="redisStatus">{{ redis_status }}</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="status-card">
+                <div class="card-body">
+                    <h6 class="text-muted mb-3">AI Engine</h6>
+                    <div class="d-flex align-items-center justify-content-between">
+                        <span class="status-indicator {% if 'Error' not in ai_status %}status-online{% else %}status-offline{% endif %}"></span>
+                        <strong id="aiStatus">{{ ai_status }}</strong>
+                    </div>
+                    {% if 'Error' in ai_status %}
+                    <a href="#troubleshoot" class="btn btn-sm btn-outline-danger mt-2">Troubleshoot</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="status-card">
+                <div class="card-body">
+                    <h6 class="text-muted mb-3">Celery Workers</h6>
+                    <div class="d-flex align-items-center justify-content-between">
+                        <span class="status-indicator status-warning" id="celeryIndicator"></span>
+                        <strong id="celeryStatus">Checking...</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Statistics with Vibrant Icons -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="stat-card" style="border-left: 4px solid #3b82f6;">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <i class="fas fa-folder-open fa-2x" style="color: #3b82f6;"></i>
+                    <div class="stat-value" id="totalCases" style="color: #3b82f6;">{{ stats.total_cases }}</div>
+                </div>
+                <div class="stat-label">Total Cases</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card" style="border-left: 4px solid #10b981;">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <i class="fas fa-video fa-2x" style="color: #10b981;"></i>
+                    <div class="stat-value" id="totalFootage" style="color: #10b981;">{{ stats.total_footage }}</div>
+                </div>
+                <div class="stat-label">CCTV Footage</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card" style="border-left: 4px solid #f59e0b;">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <i class="fas fa-user-check fa-2x" style="color: #f59e0b;"></i>
+                    <div class="stat-value" id="totalDetections" style="color: #f59e0b;">{{ stats.total_detections }}</div>
+                </div>
+                <div class="stat-label">AI Detections</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card" style="border-left: 4px solid #8b5cf6;">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <i class="fas fa-check-circle fa-2x" style="color: #8b5cf6;"></i>
+                    <div class="stat-value" id="verifiedDetections" style="color: #8b5cf6;">{{ stats.verified_detections }}</div>
+                </div>
+                <div class="stat-label">Verified</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Charts -->
+        <div class="col-md-6 mb-4">
+            <div class="status-card">
+                <div class="card-body">
+                    <h5 class="mb-3"><i class="fas fa-chart-line"></i> System Load</h5>
+                    <canvas id="systemLoadChart" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 mb-4">
+            <div class="status-card">
+                <div class="card-body">
+                    <h5 class="mb-3"><i class="fas fa-chart-pie"></i> Detection Success Rate</h5>
+                    <canvas id="successRateChart" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- System Logs -->
+    <div class="row">
+        <div class="col-12">
+            <div class="status-card">
+                <div class="card-body">
+                    <h5 class="mb-3"><i class="fas fa-terminal"></i> System Logs (Last 10 Entries)</h5>
+                    <div class="log-terminal" id="logTerminal">
+                        <div class="log-entry">Initializing system logs...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Troubleshooting Section -->
+    <div class="row mt-4" id="troubleshoot">
+        <div class="col-12">
+            <div class="status-card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="mb-0"><i class="fas fa-tools"></i> Troubleshooting & Testing</h5>
+                        <button class="btn btn-primary" onclick="testAISystem()">
+                            <i class="fas fa-flask"></i> Test AI System
+                        </button>
+                    </div>
+                    <div class="accordion" id="troubleshootAccordion">
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#aiError">
+                                    AI Engine Error
+                                </button>
+                            </h2>
+                            <div id="aiError" class="accordion-collapse collapse" data-bs-parent="#troubleshootAccordion">
+                                <div class="accordion-body">
+                                    <strong>Common Fixes:</strong>
+                                    <ul>
+                                        <li>Restart Flask: <code>python run_app.py</code></li>
+                                        <li>Check vision_engine.py imports</li>
+                                        <li>Verify face_recognition library installed</li>
+                                        <li>Run: <code>pip install face_recognition opencv-python</code></li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#redisError">
+                                    Redis Connection Error
+                                </button>
+                            </h2>
+                            <div id="redisError" class="accordion-collapse collapse" data-bs-parent="#troubleshootAccordion">
+                                <div class="accordion-body">
+                                    <strong>Common Fixes:</strong>
+                                    <ul>
+                                        <li>Start Redis: <code>redis-server</code></li>
+                                        <li>Check port 6379 is available</li>
+                                        <li>Verify Redis installed: <code>redis-cli ping</code></li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+// System Load Chart
+const loadCtx = document.getElementById('systemLoadChart').getContext('2d');
+const systemLoadChart = new Chart(loadCtx, {
+    type: 'line',
+    data: {
+        labels: ['5m ago', '4m ago', '3m ago', '2m ago', '1m ago', 'Now'],
+        datasets: [{
+            label: 'CPU Usage %',
+            data: [45, 52, 48, 55, 50, 53],
+            borderColor: '#667eea',
+            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+            tension: 0.4
+        }, {
+            label: 'Memory Usage %',
+            data: [60, 62, 65, 63, 68, 70],
+            borderColor: '#f59e0b',
+            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            tension: 0.4
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'top' }
+        },
+        scales: {
+            y: { beginAtZero: true, max: 100 }
+        }
+    }
+});
+
+// Success Rate Chart
+const successCtx = document.getElementById('successRateChart').getContext('2d');
+const totalDetections = {{ stats.total_detections }};
+const verifiedDetections = {{ stats.verified_detections }};
+const failedDetections = totalDetections - verifiedDetections;
+
+const successRateChart = new Chart(successCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['Successful', 'Failed'],
+        datasets: [{
+            data: [verifiedDetections, failedDetections],
+            backgroundColor: ['#10b981', '#ef4444']
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'bottom' }
+        }
+    }
+});
+
+// Refresh Status
+function refreshStatus() {
+    const btn = document.querySelector('.btn-refresh');
+    btn.classList.add('loading');
+    
+    // Refresh stats
+    fetch('/admin/api/system-status')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('redisStatus').textContent = data.redis;
+            document.getElementById('celeryStatus').textContent = data.celery;
+            document.getElementById('dbStatus').textContent = data.database;
+            
+            // Update indicators
+            updateIndicator('celeryIndicator', data.celery);
+            
+            setTimeout(() => {
+                btn.classList.remove('loading');
+            }, 500);
+        })
+        .catch(error => {
+            console.error('Refresh failed:', error);
+            btn.classList.remove('loading');
+        });
+    
+    // Refresh logs
+    loadSystemLogs();
+}
+
+function updateIndicator(id, status) {
+    const indicator = document.getElementById(id);
+    indicator.className = 'status-indicator';
+    if (status === 'ONLINE') {
+        indicator.classList.add('status-online');
+    } else {
+        indicator.classList.add('status-offline');
+    }
+}
+
+// Load System Logs
+function loadSystemLogs() {
+    fetch('/admin/api/system-logs')
+        .then(response => response.json())
+        .then(data => {
+            const terminal = document.getElementById('logTerminal');
+            terminal.innerHTML = '';
+            data.logs.forEach(log => {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.textContent = log;
+                terminal.appendChild(entry);
+            });
+            terminal.scrollTop = terminal.scrollHeight;
+        })
+        .catch(error => {
+            console.error('Log load failed:', error);
+        });
+}
+
+// Auto-refresh every 30 seconds
+setInterval(refreshStatus, 30000);
+
+// Load logs on page load
+loadSystemLogs();
+setInterval(loadSystemLogs, 15000);
+
+// Test AI System
+function testAISystem() {
+    const btn = event.target.closest('button');
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Testing...';
+    
+    fetch('/admin/api/test-ai-system', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        
+        if (data.success) {
+            // Show success toast
+            showToast('AI System Test Passed', `
+                <strong>All Systems Operational</strong><br>
+                Vision Engine: ${data.results.vision_engine}<br>
+                FAISS Index: ${data.results.faiss_index}<br>
+                Database: ${data.results.database}<br>
+                Detection Test: ${data.results.detection_test}
+            `, 'success');
+        } else {
+            showToast('AI System Test Failed', data.error, 'danger');
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        showToast('Test Error', error.toString(), 'danger');
+    });
+}
+
+// Toast Notification
+function showToast(title, message, type = 'success') {
+    const toastHTML = `
+        <div class="toast" role="alert" style="min-width: 300px;">
+            <div class="toast-header bg-${type} text-white">
+                <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'} me-2"></i>
+                <strong class="me-auto">${title}</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body">${message}</div>
+        </div>
+    `;
+    
+    const container = document.createElement('div');
+    container.className = 'position-fixed top-0 end-0 p-3';
+    container.style.zIndex = '9999';
+    container.innerHTML = toastHTML;
+    document.body.appendChild(container);
+    
+    const toastEl = container.querySelector('.toast');
+    const toast = new bootstrap.Toast(toastEl, { autohide: true, delay: 5000 });
+    toast.show();
+    
+    toastEl.addEventListener('hidden.bs.toast', () => {
+        container.remove();
+    });
+}
+</script>
+{% endblock %}

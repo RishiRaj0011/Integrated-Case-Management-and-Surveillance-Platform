@@ -79,6 +79,10 @@ class AutomatedCleanupService:
         """Standardized startup cleanup method"""
         return self.daily_cleanup()
     
+    def run_startup_cleanup(self):
+        """Startup cleanup method called from run_app.py"""
+        return self.daily_cleanup()
+    
     def weekly_cleanup(self):
         """Weekly cleanup tasks"""
         logger.info("Starting weekly cleanup")

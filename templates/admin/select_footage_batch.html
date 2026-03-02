@@ -1,0 +1,106 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Select Footage for Batch Analysis{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <h2><i class="fas fa-video"></i> Select Footage for Batch Analysis</h2>
+            <p class="text-muted">Case: <strong>{{ case.person_name }}</strong></p>
+        </div>
+    </div>
+
+    <form id="batchAnalysisForm">
+        <div class="row mb-3">
+            <div class="col-md-12">
+                <button type="button" class="btn btn-sm btn-secondary" onclick="selectAll()">
+                    <i class="fas fa-check-square"></i> Select All
+                </button>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="deselectAll()">
+                    <i class="fas fa-square"></i> Deselect All
+                </button>
+                <button type="submit" class="btn btn-primary float-right">
+                    <i class="fas fa-play"></i> Start Batch Analysis
+                </button>
+            </div>
+        </div>
+
+        <div class="row">
+            {% for footage in all_footage %}
+            <div class="col-md-4 mb-3">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="custom-control custom-checkbox mb-2">
+                            <input type="checkbox" 
+                                   class="custom-control-input footage-checkbox" 
+                                   id="footage_{{ footage.id }}" 
+                                   name="footage_ids[]" 
+                                   value="{{ footage.id }}">
+                            <label class="custom-control-label" for="footage_{{ footage.id }}">
+                                <strong>{{ footage.title }}</strong>
+                            </label>
+                        </div>
+                        
+                        <p class="small mb-1">
+                            <i class="fas fa-map-marker-alt"></i> {{ footage.location_name }}
+                        </p>
+                        <p class="small mb-1">
+                            <i class="fas fa-clock"></i> {{ footage.duration|round(1) }}s
+                        </p>
+                        
+                        {% if footage.id in existing_matches %}
+                        <span class="badge badge-info">
+                            Status: {{ existing_matches[footage.id] }}
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </form>
+</div>
+
+<script>
+function selectAll() {
+    document.querySelectorAll('.footage-checkbox').forEach(cb => cb.checked = true);
+}
+
+function deselectAll() {
+    document.querySelectorAll('.footage-checkbox').forEach(cb => cb.checked = false);
+}
+
+document.getElementById('batchAnalysisForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    const selectedIds = formData.getAll('footage_ids[]');
+    
+    if (selectedIds.length === 0) {
+        alert('Please select at least one footage');
+        return;
+    }
+    
+    if (!confirm(`Start batch analysis on ${selectedIds.length} videos?`)) {
+        return;
+    }
+    
+    fetch('{{ url_for("admin.analyze_batch", case_id=case.id) }}', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            window.location.href = data.redirect_url;
+        } else {
+            alert('Error: ' + data.error);
+        }
+    })
+    .catch(error => {
+        alert('Error: ' + error);
+    });
+});
+</script>
+{% endblock %}

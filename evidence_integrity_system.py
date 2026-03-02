@@ -154,6 +154,15 @@ class EvidenceIntegritySystem:
         if img is None: raise ValueError("Cannot read frame")
         frame_bytes = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
         return hashlib.sha256(frame_bytes).hexdigest()
+    
+    def generate_frame_hash(self, frame_image: np.ndarray) -> str:
+        """Generate SHA-256 hash from frame image array"""
+        try:
+            frame_bytes = cv2.imencode('.jpg', frame_image, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
+            return hashlib.sha256(frame_bytes).hexdigest()
+        except Exception as e:
+            logger.error(f"Frame hash generation error: {e}")
+            return "hash_error"
 
     def create_evidence_chain(self, case_id: int) -> EvidenceChain:
         chain_id = f"chain_{case_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"

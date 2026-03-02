@@ -37,6 +37,18 @@ def startup_checks(app_instance):
     with app_instance.app_context():
         logger.info("Running startup checks...")
         
+        # Create required directories
+        required_dirs = [
+            'static/legal_reports',
+            'static/detections',
+            'static/uploads',
+            'static/surveillance',
+            'static/chat_uploads'
+        ]
+        for dir_path in required_dirs:
+            os.makedirs(dir_path, exist_ok=True)
+        logger.info(f"✅ Directories: All required folders created")
+        
         # Check FAISS index
         try:
             from vector_search_service import get_face_search_service
@@ -72,7 +84,6 @@ def main():
     logger.info("Starting Flask Application - Production Mode")
     logger.info("="*60)
     logger.info("Access URL: http://localhost:5000")
-    logger.info("Admin credentials: admin / admin123")
     logger.info("="*60)
     
     # Safe debug mode control

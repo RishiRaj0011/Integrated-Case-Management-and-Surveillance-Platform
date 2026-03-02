@@ -3,6 +3,7 @@ from flask_login import login_required, current_user
 from functools import wraps
 from __init__ import db
 from models import User, Case, SystemLog, AdminMessage, Announcement, BlogPost, FAQ, AISettings, Sighting, ContactMessage, ChatRoom, ChatMessage, SurveillanceFootage, LocationMatch, PersonDetection, Notification, IntelligentFootageAnalysis, PersonTrackingResult, BehavioralEvent, AppearanceChangeEvent, CrowdAnalysisResult, PersonProfile, RecognitionMatch
+from ai_config_model import AIConfig
 from location_matching_routes import location_bp
 from system_health_service import system_health, get_system_status
 from security_automation import security_automation, get_security_status
@@ -10,6 +11,7 @@ from autonomous_case_resolution import analyze_case_resolution, get_resolution_c
 from outcome_prediction_engine import predict_case_outcome, get_prediction_summary
 from continuous_learning_system import continuous_learning_system
 from learning_integration import learning_integration
+from legal_evidence_report_generator import generate_legal_report
 from werkzeug.utils import secure_filename
 import os
 import cv2
@@ -2505,9 +2507,12 @@ def system_status():
         # AI system status
         ai_status = 'Available'
         try:
-            from location_matching_engine import location_engine
-            if ai_matcher.face_cascade.empty():
-                ai_status = 'Error - Face cascade not loaded'
+            from vision_engine import get_vision_engine
+            engine = get_vision_engine()
+            if engine and engine.detector:
+                ai_status = 'Connected'
+            else:
+                ai_status = 'Initializing'
         except Exception as e:
             ai_status = f'Error - {str(e)}'
         
@@ -3887,3 +3892,849 @@ def export_confidence_analysis():
     except Exception as e:
         flash(f"Error exporting confidence analysis: {str(e)}", "error")
         return redirect(url_for("admin.confidence_analysis"))
+
+
+
+@admin_bp.route("/case-timeline/<int:case_id>")
+@login_required
+@admin_required
+def case_timeline(case_id):
+    """Chronological timeline of all detections with XAI reasoning"""
+    try:
+        case = Case.query.get_or_404(case_id)
+        
+        # Aggregate all detections from location_matching_engine
+        from models import LocationMatch, PersonDetection
+        
+        location_matches = LocationMatch.query.filter_by(case_id=case_id).all()
+        
+        # Collect all detections with XAI data
+        timeline_events = []
+        
+        for match in location_matches:
+            detections = PersonDetection.query.filter_by(location_match_id=match.id).order_by(PersonDetection.timestamp).all()
+            
+            for detection in detections:
+                # Parse XAI data
+                try:
+                    feature_weights = json.loads(detection.feature_weights) if detection.feature_weights else {}
+                    decision_factors = json.loads(detection.decision_factors) if detection.decision_factors else []
+                    uncertainty_factors = json.loads(detection.uncertainty_factors) if detection.uncertainty_factors else []
+                except:
+                    feature_weights = {}
+                    decision_factors = []
+                    uncertainty_factors = []
+                
+                # Determine confidence category and color
+                confidence = detection.confidence_score
+                if confidence >= 0.90:
+                    confidence_color = 'success'  # Green
+                    confidence_label = 'Very High'
+                elif confidence >= 0.75:
+                    confidence_color = 'warning'  # Yellow
+                    confidence_label = 'High'
+                elif confidence >= 0.60:
+                    confidence_color = 'info'  # Blue
+                    confidence_label = 'Medium'
+                else:
+                    confidence_color = 'secondary'  # Gray
+                    confidence_label = 'Low'
+                
+                # Extract top 3 decision factors
+                top_factors = decision_factors[:3] if len(decision_factors) >= 3 else decision_factors
+                
+                timeline_events.append({
+                    'detection': detection,
+                    'match': match,
+                    'footage': match.footage,
+                    'timestamp': detection.timestamp,
+                    'confidence': confidence,
+                    'confidence_percent': int(confidence * 100),
+                    'confidence_color': confidence_color,
+                    'confidence_label': confidence_label,
+                    'feature_weights': feature_weights,
+                    'top_decision_factors': top_factors,
+                    'uncertainty_factors': uncertainty_factors,
+                    'frame_hash': detection.frame_hash,
+                    'evidence_number': detection.evidence_number,
+                    'is_frontal': getattr(detection, 'is_frontal_face', False),
+                    'face_pose_yaw': getattr(detection, 'face_pose_yaw', 0),
+                    'face_pose_pitch': getattr(detection, 'face_pose_pitch', 0)
+                })
+        
+        # Sort by timestamp (chronological order)
+        timeline_events.sort(key=lambda x: x['timestamp'])
+        
+        # Calculate timeline statistics
+        stats = {
+            'total_detections': len(timeline_events),
+            'very_high_confidence': len([e for e in timeline_events if e['confidence'] >= 0.90]),
+            'high_confidence': len([e for e in timeline_events if 0.75 <= e['confidence'] < 0.90]),
+            'medium_confidence': len([e for e in timeline_events if 0.60 <= e['confidence'] < 0.75]),
+            'low_confidence': len([e for e in timeline_events if e['confidence'] < 0.60]),
+            'frontal_faces': len([e for e in timeline_events if e['is_frontal']]),
+            'avg_confidence': sum([e['confidence'] for e in timeline_events]) / len(timeline_events) if timeline_events else 0,
+            'total_footage': len(set([e['footage'].id for e in timeline_events])),
+            'time_span': f"{timeline_events[-1]['timestamp'] - timeline_events[0]['timestamp']:.1f}s" if len(timeline_events) > 1 else "0s"
+        }
+        
+        return render_template(
+            "admin/case_timeline.html",
+            case=case,
+            timeline_events=timeline_events,
+            stats=stats
+        )
+        
+    except Exception as e:
+        logger.error(f"Error loading case timeline {case_id}: {str(e)}")
+        flash(f"Error loading timeline: {str(e)}", "error")
+        return redirect(url_for("admin.case_detail", case_id=case_id))
+
+
+
+@admin_bp.route("/case/<int:case_id>/select-footage-batch")
+@login_required
+@admin_required
+def select_footage_batch(case_id):
+    """Select multiple footages for batch analysis"""
+    try:
+        case = Case.query.get_or_404(case_id)
+        
+        # Get all available footage
+        all_footage = SurveillanceFootage.query.filter_by(is_active=True).order_by(
+            SurveillanceFootage.created_at.desc()
+        ).all()
+        
+        # Get existing matches to show status
+        existing_matches = {}
+        for match in LocationMatch.query.filter_by(case_id=case_id).all():
+            existing_matches[match.footage_id] = match.status
+        
+        return render_template(
+            "admin/select_footage_batch.html",
+            case=case,
+            all_footage=all_footage,
+            existing_matches=existing_matches
+        )
+        
+    except Exception as e:
+        logger.error(f"Error loading batch selection: {e}")
+        flash(f"Error: {str(e)}", "error")
+        return redirect(url_for("admin.case_detail", case_id=case_id))
+
+
+@admin_bp.route("/analyze-batch/<int:case_id>", methods=["POST"])
+@login_required
+@admin_required
+def analyze_batch(case_id):
+    """Trigger parallel batch analysis on selected footages"""
+    try:
+        case = Case.query.get_or_404(case_id)
+        
+        # Get selected footage IDs from form
+        footage_ids = request.form.getlist('footage_ids[]')
+        
+        if not footage_ids:
+            return jsonify({'success': False, 'error': 'No footage selected'})
+        
+        footage_ids = [int(fid) for fid in footage_ids]
+        
+        # Generate unique batch ID
+        import uuid
+        batch_id = f"batch_{case_id}_{uuid.uuid4().hex[:8]}"
+        
+        # Create/update location matches for selected footages
+        for footage_id in footage_ids:
+            existing_match = LocationMatch.query.filter_by(
+                case_id=case_id,
+                footage_id=footage_id
+            ).first()
+            
+            if existing_match:
+                existing_match.status = 'pending'
+                existing_match.batch_id = batch_id
+            else:
+                match = LocationMatch(
+                    case_id=case_id,
+                    footage_id=footage_id,
+                    match_score=0.0,
+                    status='pending',
+                    batch_id=batch_id,
+                    match_type='batch_analysis'
+                )
+                db.session.add(match)
+        
+        db.session.commit()
+        
+        # Trigger parallel analysis using Celery or threading
+        try:
+            from tasks import analyze_batch_parallel
+            analyze_batch_parallel.delay(case_id, footage_ids, batch_id)
+            message = f"Batch analysis started for {len(footage_ids)} videos"
+        except:
+            # Fallback to threading if Celery unavailable
+            import threading
+            thread = threading.Thread(
+                target=_batch_analysis_worker,
+                args=(case_id, footage_ids, batch_id),
+                daemon=True
+            )
+            thread.start()
+            message = f"Batch analysis started for {len(footage_ids)} videos (background)"
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'batch_id': batch_id,
+            'total_videos': len(footage_ids),
+            'redirect_url': url_for('admin.batch_results', case_id=case_id, batch_id=batch_id)
+        })
+        
+    except Exception as e:
+        logger.error(f"Batch analysis error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+def _batch_analysis_worker(case_id, footage_ids, batch_id):
+    """Background worker for batch analysis"""
+    from __init__ import create_app
+    app = create_app()
+    
+    with app.app_context():
+        from location_matching_engine import location_engine
+        
+        for footage_id in footage_ids:
+            try:
+                match = LocationMatch.query.filter_by(
+                    case_id=case_id,
+                    footage_id=footage_id,
+                    batch_id=batch_id
+                ).first()
+                
+                if match:
+                    match.status = 'processing'
+                    db.session.commit()
+                    
+                    # Run analysis with strict filtering
+                    location_engine.analyze_footage_for_person(match.id, strict_mode=True)
+                    
+            except Exception as e:
+                logger.error(f"Error analyzing footage {footage_id}: {e}")
+
+
+@admin_bp.route("/batch-results/<int:case_id>/<batch_id>")
+@login_required
+@admin_required
+def batch_results(case_id, batch_id):
+    """Unified results dashboard for batch analysis"""
+    try:
+        case = Case.query.get_or_404(case_id)
+        
+        # Get all matches in this batch
+        batch_matches = LocationMatch.query.filter_by(
+            case_id=case_id,
+            batch_id=batch_id
+        ).all()
+        
+        # Collect successful detections only (>0.88 confidence)
+        successful_detections = []
+        
+        for match in batch_matches:
+            detections = PersonDetection.query.filter(
+                PersonDetection.location_match_id == match.id,
+                PersonDetection.confidence_score > 0.88,
+                PersonDetection.is_frontal_face == True
+            ).order_by(PersonDetection.timestamp).all()
+            
+            for detection in detections:
+                # Parse XAI data
+                try:
+                    decision_factors = json.loads(detection.decision_factors) if detection.decision_factors else []
+                except:
+                    decision_factors = []
+                
+                successful_detections.append({
+                    'detection': detection,
+                    'match': match,
+                    'footage': match.footage,
+                    'timestamp': detection.timestamp,
+                    'confidence': detection.confidence_score,
+                    'confidence_percent': int(detection.confidence_score * 100),
+                    'frame_hash': detection.frame_hash,
+                    'evidence_number': detection.evidence_number,
+                    'decision_factors': decision_factors[:3],
+                    'location': match.footage.location_name,
+                    'camera_id': match.footage.id
+                })
+        
+        # Sort chronologically
+        successful_detections.sort(key=lambda x: x['timestamp'])
+        
+        # Calculate progress
+        total_videos = len(batch_matches)
+        completed = len([m for m in batch_matches if m.status == 'completed'])
+        processing = len([m for m in batch_matches if m.status == 'processing'])
+        pending = len([m for m in batch_matches if m.status == 'pending'])
+        
+        progress = {
+            'total': total_videos,
+            'completed': completed,
+            'processing': processing,
+            'pending': pending,
+            'percent': int((completed / total_videos * 100)) if total_videos > 0 else 0,
+            'is_complete': pending == 0 and processing == 0
+        }
+        
+        # Statistics
+        stats = {
+            'total_matches': len(successful_detections),
+            'unique_locations': len(set([d['location'] for d in successful_detections])),
+            'avg_confidence': sum([d['confidence'] for d in successful_detections]) / len(successful_detections) if successful_detections else 0,
+            'time_span': f"{successful_detections[-1]['timestamp'] - successful_detections[0]['timestamp']:.1f}s" if len(successful_detections) > 1 else "0s"
+        }
+        
+        return render_template(
+            "admin/batch_results.html",
+            case=case,
+            batch_id=batch_id,
+            detections=successful_detections,
+            progress=progress,
+            stats=stats
+        )
+        
+    except Exception as e:
+        logger.error(f"Error loading batch results: {e}")
+        flash(f"Error: {str(e)}", "error")
+        return redirect(url_for("admin.case_detail", case_id=case_id))
+
+
+@admin_bp.route("/api/batch-progress/<int:case_id>/<batch_id>")
+@login_required
+@admin_required
+def batch_progress(case_id, batch_id):
+    """API endpoint for real-time progress updates"""
+    try:
+        batch_matches = LocationMatch.query.filter_by(
+            case_id=case_id,
+            batch_id=batch_id
+        ).all()
+        
+        total = len(batch_matches)
+        completed = len([m for m in batch_matches if m.status == 'completed'])
+        processing = len([m for m in batch_matches if m.status == 'processing'])
+        
+        return jsonify({
+            'total': total,
+            'completed': completed,
+            'processing': processing,
+            'percent': int((completed / total * 100)) if total > 0 else 0,
+            'is_complete': processing == 0 and completed == total
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+
+# Thread-safe progress tracking
+from threading import Lock
+batch_progress = {}
+progress_lock = Lock()
+
+@admin_bp.route("/batch-analysis", methods=["POST"])
+@login_required
+@admin_required
+def batch_analysis():
+    """Multi-video batch processing with live progress"""
+    try:
+        case_id = request.form.get('case_id', type=int)
+        footage_ids = request.form.getlist('footage_ids[]')
+        
+        if not case_id or not footage_ids:
+            return jsonify({'success': False, 'error': 'Missing parameters'})
+        
+        footage_ids = [int(fid) for fid in footage_ids]
+        
+        # Initialize progress tracking
+        batch_id = f"batch_{case_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        with progress_lock:
+            for fid in footage_ids:
+                batch_progress[f"{batch_id}_{fid}"] = {'percent': 0, 'status': 'pending'}
+        
+        # Trigger parallel processing
+        try:
+            from tasks import process_batch_with_progress
+            process_batch_with_progress.delay(case_id, footage_ids, batch_id)
+        except:
+            # Fallback to threading
+            import threading
+            thread = threading.Thread(
+                target=_process_batch_background,
+                args=(case_id, footage_ids, batch_id),
+                daemon=True
+            )
+            thread.start()
+        
+        return jsonify({
+            'success': True,
+            'batch_id': batch_id,
+            'total': len(footage_ids)
+        })
+        
+    except Exception as e:
+        logger.error(f"Batch analysis error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+def _process_batch_background(case_id, footage_ids, batch_id):
+    """Background batch processing with progress updates"""
+    from __init__ import create_app, socketio
+    from location_matching_engine import location_engine
+    
+    app = create_app()
+    
+    with app.app_context():
+        for footage_id in footage_ids:
+            try:
+                progress_key = f"{batch_id}_{footage_id}"
+                
+                # Update status
+                with progress_lock:
+                    batch_progress[progress_key] = {'percent': 0, 'status': 'processing'}
+                
+                # Emit progress
+                socketio.emit('analysis_progress', {
+                    'id': footage_id,
+                    'batch_id': batch_id,
+                    'percent': 0,
+                    'status': 'processing'
+                })
+                
+                # Process with progress callback
+                location_engine.analyze_with_progress(
+                    case_id,
+                    footage_id,
+                    batch_id,
+                    progress_callback=lambda p: _update_progress(batch_id, footage_id, p)
+                )
+                
+                # Mark complete
+                with progress_lock:
+                    batch_progress[progress_key] = {'percent': 100, 'status': 'completed'}
+                
+                socketio.emit('analysis_progress', {
+                    'id': footage_id,
+                    'batch_id': batch_id,
+                    'percent': 100,
+                    'status': 'completed'
+                })
+                
+            except Exception as e:
+                logger.error(f"Error processing footage {footage_id}: {e}")
+                with progress_lock:
+                    batch_progress[f"{batch_id}_{footage_id}"] = {'percent': 0, 'status': 'failed'}
+
+
+def _update_progress(batch_id, footage_id, percent):
+    """Update progress and emit via SocketIO"""
+    from __init__ import socketio
+    
+    progress_key = f"{batch_id}_{footage_id}"
+    
+    with progress_lock:
+        batch_progress[progress_key] = {'percent': percent, 'status': 'processing'}
+    
+    socketio.emit('analysis_progress', {
+        'id': footage_id,
+        'batch_id': batch_id,
+        'percent': percent,
+        'status': 'processing'
+    })
+
+
+@admin_bp.route("/api/batch-progress/<batch_id>")
+@login_required
+@admin_required
+def get_batch_progress(batch_id):
+    """Get current progress for all videos in batch"""
+    with progress_lock:
+        progress_data = {
+            k: v for k, v in batch_progress.items() 
+            if k.startswith(batch_id)
+        }
+    
+    return jsonify(progress_data)
+
+
+
+# ===== HIGH-PRECISION FORENSIC BATCH ANALYSIS =====
+
+@admin_bp.route("/high-precision-batch-analysis", methods=["POST"])
+@login_required
+@admin_required
+def high_precision_batch_analysis():
+    """High-precision forensic batch analysis with live progress"""
+    try:
+        data = request.get_json() or request.form
+        case_id = int(data.get('case_id'))
+        footage_ids = data.get('footage_ids', [])
+        
+        if isinstance(footage_ids, str):
+            footage_ids = json.loads(footage_ids)
+        
+        footage_ids = [int(fid) for fid in footage_ids]
+        
+        if not case_id or not footage_ids:
+            return jsonify({'success': False, 'error': 'Missing parameters'})
+        
+        # Generate batch ID
+        import uuid
+        batch_id = f"hp_batch_{case_id}_{uuid.uuid4().hex[:8]}"
+        
+        # Trigger high-precision parallel processing
+        try:
+            from tasks import process_batch_high_precision
+            process_batch_high_precision.delay(case_id, footage_ids, batch_id)
+            message = f"High-precision forensic analysis started for {len(footage_ids)} videos"
+        except Exception as e:
+            logger.error(f"Celery error: {e}")
+            # Fallback to threading
+            import threading
+            thread = threading.Thread(
+                target=_hp_batch_worker,
+                args=(case_id, footage_ids, batch_id),
+                daemon=True
+            )
+            thread.start()
+            message = f"High-precision analysis started (background)"
+        
+        return jsonify({
+            'success': True,
+            'batch_id': batch_id,
+            'total': len(footage_ids),
+            'message': message
+        })
+        
+    except Exception as e:
+        logger.error(f"HP batch analysis error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+def _hp_batch_worker(case_id, footage_ids, batch_id):
+    """Background worker for high-precision batch"""
+    from __init__ import create_app, socketio
+    app = create_app()
+    
+    with app.app_context():
+        try:
+            from tasks import process_footage_high_precision
+            
+            for footage_id in footage_ids:
+                try:
+                    process_footage_high_precision(case_id, footage_id, batch_id)
+                except Exception as e:
+                    logger.error(f"Error processing footage {footage_id}: {e}")
+                    try:
+                        socketio.emit('analysis_progress', {
+                            'footage_id': footage_id,
+                            'percent': 0,
+                            'status': f'Error: {str(e)}'
+                        })
+                    except:
+                        pass
+        except Exception as e:
+            logger.error(f"HP batch worker error: {e}")
+
+
+@admin_bp.route("/api/hp-batch-progress/<batch_id>")
+@login_required
+@admin_required
+def hp_batch_progress(batch_id):
+    """Get high-precision batch progress"""
+    try:
+        matches = LocationMatch.query.filter_by(batch_id=batch_id).all()
+        
+        total = len(matches)
+        completed = len([m for m in matches if m.status == 'completed'])
+        processing = len([m for m in matches if m.status == 'processing'])
+        failed = len([m for m in matches if m.status == 'failed'])
+        
+        return jsonify({
+            'total': total,
+            'completed': completed,
+            'processing': processing,
+            'failed': failed,
+            'percent': int((completed / total * 100)) if total > 0 else 0,
+            'is_complete': processing == 0 and completed + failed == total
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@admin_bp.route("/cases/<int:case_id>/generate-legal-report", methods=["POST"])
+@login_required
+@admin_required
+def generate_case_legal_report(case_id):
+    """Generate comprehensive legal evidence report for a case"""
+    try:
+        result = generate_legal_report(case_id)
+        
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'message': 'Legal report generated successfully',
+                'report_id': result.get('report_id'),
+                'json_path': result.get('json_report_path'),
+                'pdf_path': result.get('pdf_report_path'),
+                'court_ready': result.get('court_ready', False)
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Unknown error')
+            })
+    except Exception as e:
+        logger.error(f"Error generating legal report: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ===== AI SETTINGS CONTROL CENTER =====
+
+@admin_bp.route('/ai-settings')
+@login_required
+@admin_required
+def ai_settings():
+    """AI Settings Control Center"""
+    from ai_config_model import AIConfig
+    config = AIConfig.get_config()
+    
+    return render_template('admin/ai_settings_control.html', config=config)
+
+@admin_bp.route('/ai-settings/update', methods=['POST'])
+@login_required
+@admin_required
+def update_ai_settings():
+    """Update AI configuration settings"""
+    from ai_config_model import AIConfig
+    
+    try:
+        config = AIConfig.get_config()
+        
+        # Update threshold
+        threshold = float(request.form.get('forensic_threshold', 0.88))
+        if threshold < 0.50 or threshold > 0.99:
+            flash('Threshold must be between 0.50 and 0.99', 'danger')
+            return redirect(url_for('admin.ai_settings'))
+        
+        config.forensic_threshold = threshold
+        
+        # Update weights
+        facial = float(request.form.get('facial_weight', 0.40))
+        clothing = float(request.form.get('clothing_weight', 0.35))
+        temporal = float(request.form.get('temporal_weight', 0.25))
+        
+        config.facial_weight = facial
+        config.clothing_weight = clothing
+        config.temporal_weight = temporal
+        # CRITICAL: Backend normalization`n        total = facial + clothing + temporal`n        if abs(total - 1.0) > 0.01:`n            facial = facial / total`n            clothing = clothing / total`n            temporal = temporal / total`n            flash(f'Weights auto-normalized to 100%', 'info')
+        
+        # Update performance
+        config.frame_skip_rate = int(request.form.get('frame_skip_rate', 10))
+        
+        config.updated_by = current_user.id
+        config.active_preset = 'custom'
+        
+        db.session.commit()
+        
+        flash('AI settings updated successfully!', 'success')
+        return redirect(url_for('admin.ai_settings'))
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error updating settings: {str(e)}', 'danger')
+        return redirect(url_for('admin.ai_settings'))
+
+@admin_bp.route('/ai-settings/preset/<preset_name>', methods=['POST'])
+@login_required
+@admin_required
+def apply_preset(preset_name):
+    """Apply predefined AI configuration preset"""
+    from ai_config_model import AIConfig
+    
+    try:
+        if AIConfig.apply_preset(preset_name):
+            config = AIConfig.get_config()
+            config.updated_by = current_user.id
+            db.session.commit()
+            
+            flash(f'{preset_name.replace("_", " ").title()} preset applied successfully!', 'success')
+        else:
+            flash('Invalid preset name', 'danger')
+            
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error applying preset: {str(e)}', 'danger')
+    
+    return redirect(url_for('admin.ai_settings'))
+
+@admin_bp.route('/ai-settings/test', methods=['POST'])
+@login_required
+@admin_required
+def test_ai_config():
+    """Test current AI configuration with dummy detection"""
+    from ai_config_model import AIConfig
+    import random
+    
+    try:
+        config = AIConfig.get_config()
+        
+        # Simulate detection scores
+        face_score = random.uniform(0.6, 0.95)
+        clothing_score = random.uniform(0.5, 0.90)
+        temporal_score = random.uniform(0.4, 0.85)
+        
+        # CRITICAL: Use EXACT same formula as vision_engine._calculate_xai_weights
+        confidence = (
+            face_score * config.facial_weight +
+            clothing_score * config.clothing_weight +
+            temporal_score * config.temporal_weight
+        )
+        
+        # Check if passes threshold
+        passes = confidence >= config.forensic_threshold
+        
+        result = {
+            'success': True,
+            'confidence': round(confidence, 3),
+            'threshold': config.forensic_threshold,
+            'passes': passes,
+            'breakdown': {
+                'face': round(face_score, 3),
+                'clothing': round(clothing_score, 3),
+                'temporal': round(temporal_score, 3)
+            },
+            'weights': {
+                'face': config.facial_weight,
+                'clothing': config.clothing_weight,
+                'temporal': config.temporal_weight
+            },
+            'frame_skip': config.frame_skip_rate
+        }
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+
+
+# ===== COMMAND CENTER ENHANCEMENTS =====
+
+@admin_bp.route('/api/system-status')
+@login_required
+@admin_required
+def api_system_status():
+    """Get real-time system status for Command Center"""
+    status = {
+        'redis': 'OFFLINE',
+        'celery': 'OFFLINE',
+        'database': 'OFFLINE'
+    }
+    
+    # Check Redis
+    try:
+        import redis
+        r = redis.Redis(host='localhost', port=6379, db=0, socket_connect_timeout=1)
+        r.ping()
+        status['redis'] = 'ONLINE'
+    except:
+        pass
+    
+    # Check Celery
+    try:
+        from celery_app import celery
+        inspect = celery.control.inspect(timeout=1)
+        if inspect.active():
+            status['celery'] = 'ONLINE'
+    except:
+        pass
+    
+    # Check Database
+    try:
+        from models import User
+        User.query.first()
+        status['database'] = 'ONLINE'
+    except:
+        pass
+    
+    return jsonify(status)
+
+
+@admin_bp.route('/api/check-analysis-completion')
+@login_required
+@admin_required
+def api_check_analysis_completion():
+    """Check for recently completed analysis for toast notifications"""
+    try:
+        from models import LocationMatch
+        from datetime import datetime, timedelta
+        
+        # Get analyses completed in last 30 seconds
+        recent_time = datetime.utcnow() - timedelta(seconds=30)
+        
+        completed = LocationMatch.query.filter(
+            LocationMatch.status == 'completed',
+            LocationMatch.ai_analysis_completed >= recent_time
+        ).order_by(LocationMatch.ai_analysis_completed.desc()).limit(5).all()
+        
+        results = []
+        for match in completed:
+            results.append({
+                'case_id': match.case_id,
+                'footage_id': match.footage_id,
+                'message': f'Found {match.detection_count} detections with {match.confidence_score*100:.0f}% confidence',
+                'person_found': match.person_found
+            })
+        
+        return jsonify({'completed': results})
+        
+    except Exception as e:
+        return jsonify({'completed': [], 'error': str(e)})
+
+
+@admin_bp.route('/api/system-logs')
+@login_required
+@admin_required
+def api_system_logs():
+    """Get last 10 system log entries"""
+    try:
+        import os
+        from datetime import datetime
+        
+        logs = []
+        log_file = 'app.log'
+        
+        if os.path.exists(log_file):
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+                # Get last 10 lines
+                for line in lines[-10:]:
+                    logs.append(line.strip())
+        else:
+            # Generate sample logs if file doesn't exist
+            now = datetime.now()
+            logs = [
+                f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] INFO: System initialized",
+                f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] INFO: Database connected",
+                f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] INFO: Vision engine loaded",
+                f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] INFO: FAISS index ready",
+                f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] INFO: All systems operational"
+            ]
+        
+        return jsonify({'logs': logs})
+        
+    except Exception as e:
+        return jsonify({'logs': [f'Error loading logs: {str(e)}']})

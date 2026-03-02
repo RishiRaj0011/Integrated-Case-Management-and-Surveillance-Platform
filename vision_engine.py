@@ -8,6 +8,8 @@ import numpy as np
 import cv2
 import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,31 @@ class VisionEngine:
         self.detector = None
         self.evidence_system = None
         self.xai_system = None
+        self.temporal_buffer = {}  # Track faces across frames
+        self.ai_config = self._load_ai_config()  # Load dynamic AI settings
         self._init_systems()
+    
+    def _load_ai_config(self):
+        """Load AI configuration from database (dynamic settings)"""
+        try:
+            from ai_config_model import AIConfig
+            config = AIConfig.get_config()
+            return {
+                'threshold': config.forensic_threshold,
+                'facial_weight': config.facial_weight,
+                'clothing_weight': config.clothing_weight,
+                'temporal_weight': config.temporal_weight,
+                'frame_skip': config.frame_skip_rate
+            }
+        except Exception as e:
+            logger.warning(f"Failed to load AI config, using defaults: {e}")
+            return {
+                'threshold': 0.88,
+                'facial_weight': 0.40,
+                'clothing_weight': 0.35,
+                'temporal_weight': 0.25,
+                'frame_skip': 10
+            }
     
     def _init_systems(self):
         """Initialize all systems with error handling"""
@@ -44,31 +70,108 @@ class VisionEngine:
         except Exception as e:
             logger.error(f"❌ XAI system init failed: {e}")
     
-    def detect_person(self, frame, target_encoding=None, case_id=None, strict_mode=False):
+    def detect_person(self, frame, target_encoding=None, case_id=None, strict_mode=True):
         """
-        Detect person with optional strict frontal-face mode
+        Detect person with strict landmark filtering (dynamic threshold)
         
         Args:
-            strict_mode: If True, enforces 0.88 threshold + frontal face validation
+            strict_mode: If True, requires 2 eyes + nose + mouth + dynamic confidence
         """
+        # CRITICAL: Reload config for every detection (Celery worker sync)
+        self.ai_config = self._load_ai_config()
+        
         if frame is None or not isinstance(frame, np.ndarray):
             return None
         
         if case_id:
             self.case_id = case_id
         
-        detection_data = self._build_detection_data(frame, target_encoding, strict_mode)
+        detection_data = self._build_detection_data_strict(frame, target_encoding, strict_mode)
         
         if not detection_data:
             return None
         
+        # Save extracted frame with SHA-256 hash
+        frame_path = self._save_detection_frame(frame, detection_data)
+        detection_data['frame_path'] = frame_path
+        
+        # Generate evidence with hash
         evidence = self._generate_evidence(frame, detection_data)
+        detection_data['frame_hash'] = evidence.get('frame_hash', '')
+        detection_data['evidence_number'] = evidence.get('evidence_number', '')
+        
+        # Calculate XAI weights with dynamic config
         xai_result = self._calculate_xai_weights(detection_data)
         
         return self._merge_results(detection_data, evidence, xai_result)
     
+    def detect_multi_view(self, frame, target_profiles, timestamp=0.0, case_id=None):
+        """
+        Multi-view detection with front + side profiles
+        
+        Args:
+            frame: Video frame
+            target_profiles: Dict with 'front', 'left_profile', 'right_profile' encodings
+            timestamp: Frame timestamp
+            case_id: Case ID
+        
+        Returns:
+            Detection result with forensic rendering
+        """
+        try:
+            from multi_view_forensic_engine import MultiViewForensicEngine
+            
+            if case_id:
+                self.case_id = case_id
+            
+            engine = MultiViewForensicEngine(self.case_id or 0)
+            detection_result = engine.detect_multi_view(frame, target_profiles, timestamp)
+            
+            if not detection_result:
+                return None
+            
+            # Save forensic output
+            saved = engine.save_forensic_detection(frame, detection_result, timestamp, self.case_id or 0)
+            
+            if not saved:
+                return None
+            
+            # Build detection data
+            target = detection_result['target']
+            top, right, bottom, left = target['location']
+            
+            return {
+                'confidence_score': target['confidence'],
+                'confidence_category': 'very_high' if target['confidence'] >= 0.9 else 'high',
+                'matched_profile': target['matched_profile'],
+                'temporal_count': detection_result['temporal_count'],
+                'temporal_span': detection_result['temporal_span'],
+                'crowd_size': len(detection_result['all_faces']),
+                'frame_hash': saved['frame_hash'],
+                'evidence_number': saved['evidence_number'],
+                'frame_path': saved['filepath'],
+                'detection_box': json.dumps({'top': int(top), 'right': int(right), 'bottom': int(bottom), 'left': int(left)}),
+                'face_match_score': target['confidence'],
+                'decision_factors': json.dumps([
+                    f"Multi-view match: {target['matched_profile']}",
+                    f"Temporal consensus: {detection_result['temporal_count']} frames",
+                    f"Crowd analysis: {len(detection_result['all_faces'])} faces",
+                    f"Motion filtering applied",
+                    f"Confidence: {target['confidence']*100:.1f}%"
+                ]),
+                'feature_weights': json.dumps({
+                    'multi_view_matching': {'score': target['confidence'], 'weight': 0.5},
+                    'temporal_consistency': {'score': 1.0, 'weight': 0.3},
+                    'motion_filtering': {'score': 1.0, 'weight': 0.2}
+                })
+            }
+            
+        except Exception as e:
+            logger.error(f"Multi-view detection error: {e}")
+            return None
+    
     def _build_detection_data(self, frame, target_encoding, strict_mode=False):
-        """Build detection with optional strict mode (0.88 threshold + frontal check)"""
+        """Build detection with frontal-face validation using 68-point landmarks"""
         try:
             import face_recognition
             
@@ -82,35 +185,45 @@ class VisionEngine:
             if not face_encodings:
                 return None
             
-            # Get landmarks for strict mode
-            face_landmarks_list = None
-            if strict_mode:
-                face_landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations)
+            # Get 68-point landmarks for frontal validation
+            face_landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations)
             
             best_match = None
             best_confidence = 0.0
             best_location = None
             is_frontal = False
+            face_pose_angles = None
             
             for idx, (face_encoding, face_location) in enumerate(zip(face_encodings, face_locations)):
-                # Strict frontal check
-                if strict_mode and face_landmarks_list:
-                    if idx < len(face_landmarks_list):
-                        landmarks = face_landmarks_list[idx]
-                        # Require both eyes + nose
-                        if not all(k in landmarks for k in ['left_eye', 'right_eye', 'nose_tip']):
-                            continue
-                        is_frontal = True
+                # Frontal-face validation using 68-point landmarks
+                if idx < len(face_landmarks_list):
+                    landmarks = face_landmarks_list[idx]
+                    
+                    # Check if all required landmarks exist
+                    if not all(k in landmarks for k in ['left_eye', 'right_eye', 'nose_tip', 'chin']):
+                        continue
+                    
+                    # Calculate face pose angles (Yaw/Pitch)
+                    pose_angles = self._calculate_face_pose(landmarks)
+                    
+                    # Skip if face is not frontal (Yaw/Pitch > 15 degrees)
+                    if abs(pose_angles['yaw']) > 15 or abs(pose_angles['pitch']) > 15:
+                        logger.debug(f"Skipping non-frontal face: Yaw={pose_angles['yaw']:.1f}°, Pitch={pose_angles['pitch']:.1f}°")
+                        continue
+                    
+                    is_frontal = True
+                    face_pose_angles = pose_angles
                 
                 if target_encoding is not None:
                     distance = face_recognition.face_distance([target_encoding], face_encoding)[0]
                     confidence = max(0.0, 1.0 - distance)
                     
-                    # Apply strict 0.88 threshold
-                    if strict_mode and confidence < 0.88:
+                    # Apply dynamic threshold from AI config
+                    threshold = self.ai_config.get('threshold', 0.88)
+                    if strict_mode and confidence < threshold:
                         continue
                     
-                    if confidence > best_confidence:
+                    if confidence > best_confidence and confidence >= threshold:
                         best_confidence = confidence
                         best_match = face_encoding
                         best_location = face_location
@@ -120,7 +233,7 @@ class VisionEngine:
                     best_location = face_location
                     break
             
-            if best_match is None or best_confidence < 0.4:
+            if best_match is None or best_confidence < self.ai_config.get('threshold', 0.88):
                 return None
             
             top, right, bottom, left = best_location
@@ -135,8 +248,10 @@ class VisionEngine:
                 'timestamp': 0.0,
                 'case_id': self.case_id or 0,
                 'footage_id': 0,
-                'method': 'strict_0.88' if strict_mode else 'vision_engine',
+                'method': 'frontal_validated' if is_frontal else 'vision_engine',
                 'is_frontal_face': is_frontal,
+                'face_pose_yaw': face_pose_angles['yaw'] if face_pose_angles else 0,
+                'face_pose_pitch': face_pose_angles['pitch'] if face_pose_angles else 0,
                 'clothing_confidence': 0.0,
                 'body_confidence': 0.0,
                 'motion_confidence': 0.0,
@@ -151,6 +266,30 @@ class VisionEngine:
         except Exception as e:
             logger.error(f"Detection error: {e}")
             return None
+    
+    def _calculate_face_pose(self, landmarks):
+        """Calculate face pose angles (Yaw/Pitch) from 68-point landmarks"""
+        try:
+            # Get key points
+            left_eye = np.mean(landmarks['left_eye'], axis=0)
+            right_eye = np.mean(landmarks['right_eye'], axis=0)
+            nose_tip = np.mean(landmarks['nose_tip'], axis=0)
+            chin = landmarks['chin'][8]  # Center of chin
+            
+            # Calculate Yaw (horizontal rotation)
+            eye_center = (left_eye + right_eye) / 2
+            eye_to_nose = nose_tip[0] - eye_center[0]
+            eye_width = np.linalg.norm(right_eye - left_eye)
+            yaw = np.degrees(np.arctan2(eye_to_nose, eye_width / 2)) * 2
+            
+            # Calculate Pitch (vertical rotation)
+            nose_to_chin = chin[1] - nose_tip[1]
+            face_height = chin[1] - eye_center[1]
+            pitch = np.degrees(np.arctan2(nose_to_chin - face_height * 0.5, face_height)) * 1.5
+            
+            return {'yaw': float(yaw), 'pitch': float(pitch)}
+        except:
+            return {'yaw': 0.0, 'pitch': 0.0}
     
     def _generate_evidence(self, frame, detection_data):
         """Generate evidence integrity data"""
@@ -185,11 +324,46 @@ class VisionEngine:
             }
     
     def _calculate_xai_weights(self, detection_data):
-        """Calculate XAI feature weights"""
+        """Calculate XAI feature weights using dynamic AI config"""
         try:
+            # Use dynamic weights from AI config
+            facial_weight = self.ai_config.get('facial_weight', 0.40)
+            clothing_weight = self.ai_config.get('clothing_weight', 0.35)
+            temporal_weight = self.ai_config.get('temporal_weight', 0.25)
+            
+            # Calculate weighted confidence
+            face_score = detection_data.get('face_confidence', 0.0)
+            clothing_score = detection_data.get('clothing_confidence', 0.0)
+            temporal_score = detection_data.get('consistency', 0.0)
+            
+            weighted_confidence = (
+                face_score * facial_weight +
+                clothing_score * clothing_weight +
+                temporal_score * temporal_weight
+            )
+            
+            # Build XAI result
+            xai_result = type('XAIResult', (), {
+                'feature_weights': type('Weights', (), {
+                    'get_confidence_breakdown': lambda: {
+                        'facial_structure': {'score': face_score, 'weight': facial_weight, 'contribution': face_score * facial_weight},
+                        'clothing_biometric': {'score': clothing_score, 'weight': clothing_weight, 'contribution': clothing_score * clothing_weight},
+                        'temporal_consistency': {'score': temporal_score, 'weight': temporal_weight, 'contribution': temporal_score * temporal_weight}
+                    }
+                })(),
+                'decision_factors': [
+                    f"Facial match: {face_score*100:.1f}% × {facial_weight*100:.0f}%",
+                    f"Clothing match: {clothing_score*100:.1f}% × {clothing_weight*100:.0f}%",
+                    f"Temporal consistency: {temporal_score*100:.1f}% × {temporal_weight*100:.0f}%",
+                    f"Weighted confidence: {weighted_confidence*100:.1f}%"
+                ],
+                'uncertainty_factors': []
+            })()
+            
             if self.xai_system:
                 xai_result = self.xai_system.analyze_detection_with_xai(detection_data)
-                return xai_result
+            
+            return xai_result
         except Exception as e:
             logger.error(f"XAI calculation error: {e}")
         
@@ -257,3 +431,158 @@ def get_vision_engine(case_id=None):
             return None
     
     return _vision_engines[key]
+
+    
+    def _save_detection_frame(self, frame, detection_data):
+        """Save forensic output with zoom-in inset"""
+        try:
+            case_id = detection_data.get('case_id', 0)
+            evidence_num = detection_data.get('evidence_number', f"EVD-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+            
+            detection_dir = Path(f"static/detections/case_{case_id}")
+            detection_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = detection_data.get('timestamp', 0.0)
+            frame_filename = f"{evidence_num}_forensic_t{timestamp:.2f}.jpg"
+            frame_path = detection_dir / frame_filename
+            
+            # Render forensic output
+            forensic_frame = self.render_forensic_output(frame, detection_data)
+            cv2.imwrite(str(forensic_frame), forensic_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            logger.info(f"✅ Saved forensic frame: {frame_path}")
+            
+            return str(frame_path)
+        except Exception as e:
+            logger.error(f"❌ Failed to save detection frame: {e}")
+            return ""
+    
+    def _build_detection_data_strict(self, frame, target_encoding, strict_mode=True):
+        """Build detection with STRICT landmark filtering: 2 eyes + nose + mouth required"""
+        try:
+            import face_recognition
+            
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            face_locations = face_recognition.face_locations(rgb_frame, model='hog')
+            
+            if not face_locations:
+                return None
+            
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            if not face_encodings:
+                return None
+            
+            # Get landmarks for ALL faces
+            face_landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations)
+            
+            best_match = None
+            best_confidence = 0.0
+            best_location = None
+            is_frontal = False
+            face_pose_angles = None
+            xai_factors = []
+            
+            for idx, (face_encoding, face_location) in enumerate(zip(face_encodings, face_locations)):
+                # STRICT LANDMARK CHECK: Must have 2 eyes + nose + mouth
+                if idx < len(face_landmarks_list):
+                    landmarks = face_landmarks_list[idx]
+                    
+                    # Check required landmarks for frontal view
+                    required_landmarks = ['left_eye', 'right_eye', 'nose_tip', 'top_lip', 'bottom_lip']
+                    if not all(k in landmarks for k in required_landmarks):
+                        logger.debug(f"Skipping face: Missing required landmarks")
+                        continue
+                    
+                    # Verify landmark counts (quality check)
+                    left_eye_count = len(landmarks.get('left_eye', []))
+                    right_eye_count = len(landmarks.get('right_eye', []))
+                    nose_count = len(landmarks.get('nose_tip', []))
+                    mouth_count = len(landmarks.get('top_lip', [])) + len(landmarks.get('bottom_lip', []))
+                    
+                    # Must have sufficient landmark points
+                    if left_eye_count < 4 or right_eye_count < 4 or nose_count < 3 or mouth_count < 10:
+                        logger.debug(f"Skipping face: Insufficient landmark points")
+                        continue
+                    
+                    # Calculate face pose
+                    pose_angles = self._calculate_face_pose(landmarks)
+                    
+                    # Skip non-frontal faces (±15° tolerance)
+                    if abs(pose_angles['yaw']) > 15 or abs(pose_angles['pitch']) > 15:
+                        logger.debug(f"Skipping non-frontal: Yaw={pose_angles['yaw']:.1f}°, Pitch={pose_angles['pitch']:.1f}°")
+                        continue
+                    
+                    is_frontal = True
+                    face_pose_angles = pose_angles
+                    
+                    # Build XAI factors
+                    xai_factors = [
+                        f"Eyes detected: {left_eye_count + right_eye_count} points",
+                        f"Nose detected: {nose_count} points",
+                        f"Mouth detected: {mouth_count} points",
+                        f"Frontal pose: Yaw {pose_angles['yaw']:.1f}°, Pitch {pose_angles['pitch']:.1f}°"
+                    ]
+                
+                # Calculate confidence
+                if target_encoding is not None:
+                    distance = face_recognition.face_distance([target_encoding], face_encoding)[0]
+                    confidence = max(0.0, 1.0 - distance)
+                    
+                    # Apply 0.88 threshold
+                    if confidence < self.ai_config.get('threshold', 0.88):
+                        continue
+                    
+                    xai_factors.append(f"Face match confidence: {confidence * 100:.1f}%")
+                    
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_match = face_encoding
+                        best_location = face_location
+                else:
+                    best_confidence = 0.7
+                    best_match = face_encoding
+                    best_location = face_location
+                    break
+            
+            if best_match is None or best_confidence < self.ai_config.get('threshold', 0.88):
+                return None
+            
+            top, right, bottom, left = best_location
+            bbox = (left, top, right - left, bottom - top)
+            
+            return {
+                'confidence': best_confidence,
+                'face_confidence': best_confidence,
+                'confidence_score': best_confidence,
+                'face_match_score': best_confidence,
+                'bbox': bbox,
+                'detection_box': bbox,
+                'face_encoding': best_match.tolist(),
+                'timestamp': 0.0,
+                'case_id': self.case_id or 0,
+                'footage_id': 0,
+                'method': 'strict_landmarks_0.88',
+                'is_frontal_face': is_frontal,
+                'face_pose_yaw': face_pose_angles['yaw'] if face_pose_angles else 0,
+                'face_pose_pitch': face_pose_angles['pitch'] if face_pose_angles else 0,
+                'decision_factors': json.dumps(xai_factors),
+                'feature_weights': json.dumps({
+                    'facial_landmarks': {'score': 1.0, 'weight': 0.4},
+                    'face_match': {'score': best_confidence, 'weight': 0.6}
+                }),
+                'evidence_number': f"EVD-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                'frame_hash': '',  # Will be generated during save
+                'clothing_confidence': 0.0,
+                'body_confidence': 0.0,
+                'motion_confidence': 0.0,
+                'duration': 0.0,
+                'consistency': 0.0,
+                'tracking_stability': 0.0,
+                'frame_quality': 0.9,
+                'face_visibility': 0.9,
+                'lighting_quality': 0.8
+            }
+            
+        except Exception as e:
+            logger.error(f"Strict detection error: {e}")
+            return None
+

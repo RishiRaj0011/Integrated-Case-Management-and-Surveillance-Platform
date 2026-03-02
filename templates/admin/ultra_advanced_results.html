@@ -85,13 +85,16 @@
                         <div class="col-md-12">
                             <h5>Person Appearance Timeline</h5>
                             {% for appearance in appearances %}
-                            <div class="card mb-3 {% if appearance.max_confidence >= 0.7 %}border-success{% elif appearance.max_confidence >= 0.5 %}border-warning{% else %}border-danger{% endif %}">
+                            <div class="card mb-3 {% if appearance.max_confidence >= 0.88 %}border-success{% elif appearance.max_confidence >= 0.75 %}border-warning{% else %}border-danger{% endif %}">
                                 <div class="card-header">
                                     <h6 class="mb-0">
                                         <i class="fas fa-play-circle"></i>
                                         Appearance #{{ loop.index }}
-                                        <span class="badge {% if appearance.max_confidence >= 0.7 %}badge-success{% elif appearance.max_confidence >= 0.5 %}badge-warning{% else %}badge-danger{% endif %} ml-2">
+                                        <span class="badge {% if appearance.max_confidence >= 0.88 %}badge-success{% elif appearance.max_confidence >= 0.75 %}badge-warning{% else %}badge-danger{% endif %} ml-2">
                                             {{ "%.1f"|format(appearance.max_confidence * 100) }}% Confidence
+                                            {% if appearance.max_confidence >= 0.88 %}
+                                            <i class="fas fa-check-circle ml-1"></i> Forensic Grade
+                                            {% endif %}
                                         </span>
                                         <small class="text-muted float-right">
                                             {{ "%.2f"|format(appearance.start_time) }}s - {{ "%.2f"|format(appearance.end_time) }}s 
@@ -117,7 +120,7 @@
                                                 <div class="timeline-item mb-2">
                                                     <small class="text-muted">
                                                         <i class="fas fa-clock"></i> {{ "%.2f"|format(sighting.timestamp) }}s
-                                                        <span class="badge badge-sm {% if sighting.confidence_score >= 0.7 %}badge-success{% elif sighting.confidence_score >= 0.5 %}badge-warning{% else %}badge-secondary{% endif %}">
+                                                        <span class="badge badge-sm {% if sighting.confidence_score >= 0.88 %}badge-success{% elif sighting.confidence_score >= 0.75 %}badge-warning{% else %}badge-secondary{% endif %}">
                                                             {{ "%.1f"|format(sighting.confidence_score * 100) }}%
                                                         </span>
                                                     </small>
@@ -156,8 +159,11 @@
                                         <tr>
                                             <td>{{ "%.2f"|format(sighting.timestamp) }}s</td>
                                             <td>
-                                                <span class="badge {% if sighting.confidence_score >= 0.7 %}badge-success{% elif sighting.confidence_score >= 0.5 %}badge-warning{% else %}badge-secondary{% endif %}">
+                                                <span class="badge {% if sighting.confidence_score >= 0.88 %}badge-success{% elif sighting.confidence_score >= 0.75 %}badge-warning{% else %}badge-secondary{% endif %}">
                                                     {{ "%.1f"|format(sighting.confidence_score * 100) }}%
+                                                    {% if sighting.confidence_score >= 0.88 %}
+                                                    <i class="fas fa-gavel ml-1" title="Forensic Grade"></i>
+                                                    {% endif %}
                                                 </span>
                                             </td>
                                             <td><small>{{ sighting.detection_method }}</small></td>

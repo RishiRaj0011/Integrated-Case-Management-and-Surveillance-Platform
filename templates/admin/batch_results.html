@@ -1,0 +1,213 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Batch Analysis Results{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <h2><i class="fas fa-chart-line"></i> Batch Analysis Results</h2>
+            <p class="text-muted">Case: <strong>{{ case.person_name }}</strong> | Batch ID: {{ batch_id }}</p>
+        </div>
+    </div>
+
+    <!-- Progress Bar -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5>Analysis Progress</h5>
+                    <div class="progress" style="height: 30px;">
+                        <div id="progressBar" 
+                             class="progress-bar progress-bar-striped {% if not progress.is_complete %}progress-bar-animated{% endif %}" 
+                             role="progressbar" 
+                             style="width: {{ progress.percent }}%">
+                            {{ progress.percent }}%
+                        </div>
+                    </div>
+                    <p class="mt-2 mb-0">
+                        <span id="statusText">
+                            Completed: <strong id="completedCount">{{ progress.completed }}</strong> / {{ progress.total }} videos
+                            {% if progress.processing > 0 %}
+                            | Processing: <strong>{{ progress.processing }}</strong>
+                            {% endif %}
+                        </span>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Statistics -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-success text-white">
+                <div class="card-body">
+                    <h5>Successful Matches</h5>
+                    <h2>{{ stats.total_matches }}</h2>
+                    <small>>88% confidence + frontal</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-info text-white">
+                <div class="card-body">
+                    <h5>Unique Locations</h5>
+                    <h2>{{ stats.unique_locations }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-warning text-white">
+                <div class="card-body">
+                    <h5>Avg Confidence</h5>
+                    <h2>{{ (stats.avg_confidence * 100)|int }}%</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <h5>Time Span</h5>
+                    <h2>{{ stats.time_span }}</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unified Timeline -->
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h4>Chronological Detection Timeline</h4>
+                </div>
+                <div class="card-body">
+                    {% if detections %}
+                    <div class="timeline">
+                        {% for det in detections %}
+                        <div class="timeline-item mb-4 p-3 border-left border-success border-5">
+                            <div class="row">
+                                <div class="col-md-2">
+                                    {% if det.detection.frame_path %}
+                                    <img src="{{ url_for('static', filename=det.detection.frame_path) }}" 
+                                         class="img-fluid rounded" 
+                                         alt="Detection">
+                                    {% else %}
+                                    <div class="bg-secondary text-white p-4 text-center rounded">
+                                        <i class="fas fa-user fa-3x"></i>
+                                    </div>
+                                    {% endif %}
+                                    <small class="text-muted d-block mt-2">
+                                        <i class="fas fa-clock"></i> {{ det.timestamp|round(1) }}s
+                                    </small>
+                                </div>
+
+                                <div class="col-md-10">
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <div>
+                                            <h5 class="mb-1">
+                                                <span class="badge badge-success">
+                                                    {{ det.confidence_percent }}% Confidence
+                                                </span>
+                                                <span class="badge badge-info">
+                                                    <i class="fas fa-check-circle"></i> Frontal Validated
+                                                </span>
+                                            </h5>
+                                            <p class="text-muted mb-0">
+                                                <i class="fas fa-map-marker-alt"></i> <strong>{{ det.location }}</strong> (Camera #{{ det.camera_id }})
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Confidence Bar -->
+                                    <div class="mb-3">
+                                        <div class="progress" style="height: 20px;">
+                                            <div class="progress-bar bg-success" 
+                                                 style="width: {{ det.confidence_percent }}%">
+                                                {{ det.confidence_percent }}%
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- XAI Decision Factors -->
+                                    <div class="mb-2">
+                                        <label class="small font-weight-bold">
+                                            <i class="fas fa-brain"></i> Decision Factors
+                                        </label>
+                                        <ul class="list-unstyled ml-3">
+                                            {% for factor in det.decision_factors %}
+                                            <li><i class="fas fa-check text-success"></i> {{ factor }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    </div>
+
+                                    <!-- Evidence -->
+                                    <div class="small text-muted">
+                                        <i class="fas fa-shield-alt"></i> Evidence: {{ det.evidence_number }}
+                                        | Hash: <code>{{ det.frame_hash[:16] }}...</code>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i> 
+                        {% if progress.is_complete %}
+                        No matches found meeting the strict criteria (>88% confidence + frontal face).
+                        {% else %}
+                        Analysis in progress... Results will appear here.
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <a href="{{ url_for('admin.case_detail', case_id=case.id) }}" class="btn btn-secondary">
+                <i class="fas fa-arrow-left"></i> Back to Case
+            </a>
+            <button onclick="location.reload()" class="btn btn-primary">
+                <i class="fas fa-sync"></i> Refresh Results
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Auto-refresh progress every 3 seconds if not complete
+{% if not progress.is_complete %}
+setInterval(function() {
+    fetch('{{ url_for("admin.batch_progress", case_id=case.id, batch_id=batch_id) }}')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('progressBar').style.width = data.percent + '%';
+            document.getElementById('progressBar').textContent = data.percent + '%';
+            document.getElementById('completedCount').textContent = data.completed;
+            
+            if (data.is_complete) {
+                location.reload();
+            }
+        });
+}, 3000);
+{% endif %}
+</script>
+
+<style>
+.timeline-item {
+    background: #f8f9fa;
+    border-radius: 8px;
+    transition: all 0.3s;
+}
+.timeline-item:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    transform: translateX(5px);
+}
+</style>
+{% endblock %}

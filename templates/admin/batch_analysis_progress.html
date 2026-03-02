@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}Batch Analysis Progress{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <i class="fas fa-tasks"></i> Multi-Video Batch Processing
+                    </h3>
+                </div>
+                <div class="card-body">
+                    <div id="progress-container">
+                        <!-- Progress bars will be dynamically added here -->
+                    </div>
+                    
+                    <div class="mt-4">
+                        <button id="start-analysis" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Start Analysis
+                        </button>
+                        <a href="{{ url_for('admin.case_detail', case_id=case_id) }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Back to Case
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script>
+const socket = io();
+const caseId = {{ case_id }};
+const footageIds = {{ footage_ids | tojson }};
+
+// Initialize progress bars
+function initProgressBars() {
+    const container = document.getElementById('progress-container');
+    container.innerHTML = '';
+    
+    footageIds.forEach(id => {
+        const progressHtml = `
+            <div class="mb-3" id="footage-${id}">
+                <h6>Footage ID: ${id}</h6>
+                <div class="progress" style="height: 30px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                         role="progressbar" 
+                         id="progress-${id}"
+                         style="width: 0%"
+                         aria-valuenow="0" 
+                         aria-valuemin="0" 
+                         aria-valuemax="100">
+                        0%
+                    </div>
+                </div>
+                <small class="text-muted" id="status-${id}">Waiting...</small>
+            </div>
+        `;
+        container.innerHTML += progressHtml;
+    });
+}
+
+// Update progress bar
+function updateProgress(footageId, percent, status) {
+    const progressBar = document.getElementById(`progress-${footageId}`);
+    const statusText = document.getElementById(`status-${footageId}`);
+    
+    if (progressBar) {
+        progressBar.style.width = percent + '%';
+        progressBar.setAttribute('aria-valuenow', percent);
+        progressBar.textContent = Math.round(percent) + '%';
+        
+        if (percent >= 100) {
+            progressBar.classList.remove('progress-bar-animated');
+            progressBar.classList.add('bg-success');
+        }
+    }
+    
+    if (statusText && status) {
+        statusText.textContent = status;
+    }
+}
+
+// Socket.IO event listeners
+socket.on('analysis_progress', function(data) {
+    console.log('Progress update:', data);
+    updateProgress(data.footage_id, data.percent, data.status);
+});
+
+socket.on('analysis_complete', function(data) {
+    console.log('Analysis complete:', data);
+    updateProgress(data.footage_id, 100, `Complete: ${data.detections} detections found`);
+});
+
+socket.on('analysis_error', function(data) {
+    console.log('Analysis error:', data);
+    const progressBar = document.getElementById(`progress-${data.footage_id}`);
+    if (progressBar) {
+        progressBar.classList.remove('progress-bar-animated');
+        progressBar.classList.add('bg-danger');
+        progressBar.textContent = 'Error';
+    }
+    const statusText = document.getElementById(`status-${data.footage_id}`);
+    if (statusText) {
+        statusText.textContent = 'Error: ' + data.error;
+        statusText.classList.add('text-danger');
+    }
+});
+
+// Start analysis
+document.getElementById('start-analysis').addEventListener('click', function() {
+    this.disabled = true;
+    this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+    
+    fetch('/admin/batch-analysis', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token() }}'
+        },
+        body: JSON.stringify({
+            case_id: caseId,
+            footage_ids: footageIds
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            console.log('Batch analysis started:', data);
+        } else {
+            alert('Error: ' + data.error);
+            this.disabled = false;
+            this.innerHTML = '<i class="fas fa-play"></i> Start Analysis';
+        }
+    })
+    .catch(error => {
+        alert('Error starting analysis: ' + error);
+        this.disabled = false;
+        this.innerHTML = '<i class="fas fa-play"></i> Start Analysis';
+    });
+});
+
+// Initialize on page load
+initProgressBars();
+</script>
+{% endblock %}

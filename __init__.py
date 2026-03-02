@@ -76,6 +76,7 @@ def create_app(config_class=Config):
     csrf.exempt('learning.trigger_learning')
     csrf.exempt('learning.reduce_false_positives')
     csrf.exempt('learning.update_threshold')
+    csrf.exempt('main.check_new_messages')
     
     # Track user activity
     @app.before_request

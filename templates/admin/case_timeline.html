@@ -1,0 +1,181 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Case Timeline - {{ case.person_name }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <h2><i class="fas fa-timeline"></i> Detection Timeline: {{ case.person_name }}</h2>
+            <p class="text-muted">Chronological analysis with XAI reasoning</p>
+        </div>
+    </div>
+
+    <!-- Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <h5>Total Detections</h5>
+                    <h2>{{ stats.total_detections }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-success text-white">
+                <div class="card-body">
+                    <h5>High Confidence (>75%)</h5>
+                    <h2>{{ stats.very_high_confidence + stats.high_confidence }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-info text-white">
+                <div class="card-body">
+                    <h5>Frontal Faces</h5>
+                    <h2>{{ stats.frontal_faces }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-warning text-white">
+                <div class="card-body">
+                    <h5>Avg Confidence</h5>
+                    <h2>{{ (stats.avg_confidence * 100)|int }}%</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h4>Detection Timeline ({{ stats.time_span }} span)</h4>
+                </div>
+                <div class="card-body">
+                    {% if timeline_events %}
+                    <div class="timeline">
+                        {% for event in timeline_events %}
+                        <div class="timeline-item mb-4 p-3 border-left border-{{ event.confidence_color }} border-5">
+                            <div class="row">
+                                <!-- Detection Image -->
+                                <div class="col-md-2">
+                                    {% if event.detection.frame_path %}
+                                    <img src="{{ url_for('static', filename=event.detection.frame_path) }}" 
+                                         class="img-fluid rounded" 
+                                         alt="Detection at {{ event.timestamp }}s">
+                                    {% else %}
+                                    <div class="bg-secondary text-white p-4 text-center rounded">
+                                        <i class="fas fa-user fa-3x"></i>
+                                    </div>
+                                    {% endif %}
+                                    <small class="text-muted d-block mt-2">
+                                        <i class="fas fa-clock"></i> {{ event.timestamp|round(1) }}s
+                                    </small>
+                                </div>
+
+                                <!-- Detection Details -->
+                                <div class="col-md-10">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div>
+                                            <h5 class="mb-1">
+                                                <span class="badge badge-{{ event.confidence_color }}">
+                                                    {{ event.confidence_label }}: {{ event.confidence_percent }}%
+                                                </span>
+                                                {% if event.is_frontal %}
+                                                <span class="badge badge-info">
+                                                    <i class="fas fa-check-circle"></i> Frontal Face
+                                                </span>
+                                                {% endif %}
+                                            </h5>
+                                            <p class="text-muted mb-1">
+                                                <strong>Location:</strong> {{ event.footage.location_name }}<br>
+                                                <strong>Evidence:</strong> {{ event.evidence_number or 'N/A' }}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Confidence Bar -->
+                                    <div class="mb-3">
+                                        <label class="small font-weight-bold">Confidence Level</label>
+                                        <div class="progress" style="height: 25px;">
+                                            <div class="progress-bar bg-{{ event.confidence_color }}" 
+                                                 role="progressbar" 
+                                                 style="width: {{ event.confidence_percent }}%"
+                                                 aria-valuenow="{{ event.confidence_percent }}" 
+                                                 aria-valuemin="0" 
+                                                 aria-valuemax="100">
+                                                {{ event.confidence_percent }}%
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Top 3 Decision Factors -->
+                                    <div class="mb-2">
+                                        <label class="small font-weight-bold">
+                                            <i class="fas fa-brain"></i> Top Decision Factors (XAI)
+                                        </label>
+                                        <ul class="list-unstyled ml-3">
+                                            {% if event.top_decision_factors %}
+                                                {% for factor in event.top_decision_factors %}
+                                                <li><i class="fas fa-check text-success"></i> {{ factor }}</li>
+                                                {% endfor %}
+                                            {% else %}
+                                                <li class="text-muted">No XAI data available</li>
+                                            {% endif %}
+                                        </ul>
+                                    </div>
+
+                                    <!-- Face Pose Info (if frontal) -->
+                                    {% if event.is_frontal %}
+                                    <div class="small text-muted">
+                                        <i class="fas fa-info-circle"></i> 
+                                        Face Pose: Yaw {{ event.face_pose_yaw|round(1) }}°, 
+                                        Pitch {{ event.face_pose_pitch|round(1) }}°
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i> No detections found for this case yet.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Back Button -->
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <a href="{{ url_for('admin.case_detail', case_id=case.id) }}" class="btn btn-secondary">
+                <i class="fas fa-arrow-left"></i> Back to Case Details
+            </a>
+        </div>
+    </div>
+</div>
+
+<style>
+.timeline-item {
+    background: #f8f9fa;
+    border-radius: 8px;
+    transition: all 0.3s;
+}
+
+.timeline-item:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    transform: translateX(5px);
+}
+
+.border-success { border-color: #28a745 !important; }
+.border-warning { border-color: #ffc107 !important; }
+.border-info { border-color: #17a2b8 !important; }
+.border-secondary { border-color: #6c757d !important; }
+</style>
+{% endblock %}

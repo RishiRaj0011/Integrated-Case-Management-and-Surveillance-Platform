@@ -10,29 +10,32 @@ import pickle
 from typing import List, Tuple, Optional
 
 class FaceVectorSearchService:
-    def __init__(self, dimension: int = 128, index_path: str = "instance/faiss_index.bin"):
+    def __init__(self, dimension: int = 128, index_path: str = "instance/faiss_index.bin", nlist: int = 100):
         """
         Initialize FAISS index for face encoding search
         
         Args:
             dimension: Face encoding dimension (default: 128)
             index_path: Path to save/load FAISS index
+            nlist: Number of clusters for IVF (default: 100)
         """
         self.dimension = dimension
         self.index_path = index_path
         self.mapping_path = index_path.replace('.bin', '_mapping.pkl')
+        self.nlist = nlist
         self.index = None
         self.id_mapping = []  # Maps FAISS index position to database IDs
         
         self._initialize_index()
     
     def _initialize_index(self):
-        """Initialize or load FAISS index with cosine similarity"""
+        """Initialize or load FAISS IVF index with cosine similarity"""
         if os.path.exists(self.index_path) and os.path.exists(self.mapping_path):
             self._load_index()
         else:
-            # Create new index with cosine similarity (Inner Product after normalization)
-            self.index = faiss.IndexFlatIP(self.dimension)
+            # Create IVF index for 10x faster search on large datasets
+            quantizer = faiss.IndexFlatIP(self.dimension)
+            self.index = faiss.IndexIVFFlat(quantizer, self.dimension, self.nlist, faiss.METRIC_INNER_PRODUCT)
             self.id_mapping = []
     
     def _load_index(self):
@@ -69,6 +72,8 @@ class FaceVectorSearchService:
         vector = np.array(face_encoding, dtype=np.float32).reshape(1, -1)
         vector = self._normalize_vector(vector)
         
+        if not self.index.is_trained:
+            self.index.train(vector)
         self.index.add(vector)
         self.id_mapping.append(db_id)
         self._save_index()
@@ -86,6 +91,8 @@ class FaceVectorSearchService:
         vectors = np.array([enc[0] for enc in encodings], dtype=np.float32)
         vectors = np.array([self._normalize_vector(v) for v in vectors])
         
+        if not self.index.is_trained:
+            self.index.train(vectors)
         self.index.add(vectors)
         self.id_mapping.extend([enc[1] for enc in encodings])
         self._save_index()
@@ -104,11 +111,31 @@ class FaceVectorSearchService:
         if self.index.ntotal == 0:
             return []
         
-        query_vector = np.array(query_encoding, dtype=np.float32).reshape(1, -1)
-        query_vector = self._normalize_vector(query_vector)
-        
-        # Search returns cosine similarity scores (higher is better)
-        similarities, indices = self.index.search(query_vector, min(top_k, self.index.ntotal))
+        # Safety check: If IVF index is not trained, fall back to flat search
+        if not self.index.is_trained:
+            import logging
+            logging.warning("IVF index not trained, falling back to IndexFlatIP")
+            # Create temporary flat index for this search
+            temp_index = faiss.IndexFlatIP(self.dimension)
+            # Get all vectors from current index
+            if hasattr(self.index, 'quantizer') and self.index.quantizer.ntotal > 0:
+                # Copy vectors from quantizer
+                vectors = np.zeros((self.index.ntotal, self.dimension), dtype=np.float32)
+                for i in range(self.index.ntotal):
+                    temp_index.add(self.index.reconstruct(i).reshape(1, -1))
+            else:
+                # Index is empty, return empty results
+                return []
+            
+            query_vector = np.array(query_encoding, dtype=np.float32).reshape(1, -1)
+            query_vector = self._normalize_vector(query_vector)
+            similarities, indices = temp_index.search(query_vector, min(top_k, temp_index.ntotal))
+        else:
+            query_vector = np.array(query_encoding, dtype=np.float32).reshape(1, -1)
+            query_vector = self._normalize_vector(query_vector)
+            
+            # Search returns cosine similarity scores (higher is better)
+            similarities, indices = self.index.search(query_vector, min(top_k, self.index.ntotal))
         
         results = []
         for idx, sim in zip(indices[0], similarities[0]):
@@ -124,7 +151,8 @@ class FaceVectorSearchService:
         Args:
             person_profiles: Query result of PersonProfile.query.all()
         """
-        self.index = faiss.IndexFlatIP(self.dimension)
+        quantizer = faiss.IndexFlatIP(self.dimension)
+        self.index = faiss.IndexIVFFlat(quantizer, self.dimension, self.nlist, faiss.METRIC_INNER_PRODUCT)
         self.id_mapping = []
         
         encodings = []

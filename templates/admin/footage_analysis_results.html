@@ -67,6 +67,32 @@
                         </div>
                     </div>
 
+                    <!-- XAI Decision Factors -->
+                    <div class="row mb-4">
+                        <div class="col-md-12">
+                            <h5><i class="fas fa-brain"></i> AI Decision Transparency</h5>
+                            {% for sighting in sightings[:5] %}
+                            <div class="card mb-2">
+                                <div class="card-body">
+                                    <h6>Detection at {{ "%.2f"|format(sighting.timestamp) }}s - Confidence: {{ "%.1f"|format(sighting.confidence_score * 100) }}%</h6>
+                                    {% if sighting.decision_factors %}
+                                    <strong>Decision Factors:</strong>
+                                    <ul>
+                                        {% for factor in sighting.decision_factors|from_json %}
+                                        <li>{{ factor }}</li>
+                                        {% endfor %}
+                                    </ul>
+                                    {% endif %}
+                                    <small class="text-muted">
+                                        <strong>Evidence:</strong> {{ sighting.evidence_number }} | 
+                                        <strong>Hash:</strong> {{ sighting.frame_hash[:16] }}...
+                                    </small>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
                     <!-- Grouped Detections -->
                     <div class="row">
                         <div class="col-md-12">
