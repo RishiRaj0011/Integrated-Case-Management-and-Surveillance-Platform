@@ -1,0 +1,37 @@
+# 100% Accuracy Upgrade - Additional Requirements
+# Add these to your existing requirements.txt
+
+# InsightFace for 512-d ArcFace embeddings
+insightface==0.7.3
+onnxruntime==1.16.0
+
+# FAISS for vector database
+faiss-cpu==1.7.4
+
+# Enhanced OpenCV
+opencv-python==4.8.1.78
+opencv-contrib-python==4.8.1.78
+
+# Image processing
+scikit-image==0.22.0
+Pillow==10.1.0
+
+# Scientific computing
+numpy==1.24.3
+scipy==1.11.4
+
+# Serialization
+pickle5==0.0.12
+
+# Existing requirements (keep these)
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+Flask-WTF==1.2.1
+Flask-Bcrypt==1.0.1
+WTForms==3.1.1
+face-recognition==1.3.0
+dlib==19.24.2
+python-dotenv==1.0.0
+itsdangerous==2.1.2
+Werkzeug==3.0.1

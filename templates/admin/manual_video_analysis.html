@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{% block title %}Manual Video Analysis - {{ case.person_name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-12">
+            <h2>📹 Manual Video Analysis</h2>
+            <p class="text-muted">Upload and analyze specific CCTV footage for this case</p>
+            <hr>
+        </div>
+    </div>
+
+    <!-- Case Information -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5>Case Information</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Case ID:</strong> #{{ case.id }}</p>
+                    <p><strong>Person Name:</strong> {{ case.person_name }}</p>
+                    <p><strong>Age:</strong> {{ case.age or 'Unknown' }}</p>
+                    <p><strong>Last Seen:</strong> {{ case.last_seen_location }}</p>
+                    <p><strong>Date Missing:</strong> {{ case.date_missing.strftime('%d %b %Y') if case.date_missing else 'Unknown' }}</p>
+                    <p><strong>Status:</strong> <span class="badge badge-{{ case.status_color }}">{{ case.status }}</span></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-info text-white">
+                    <h5>AI Profile Status</h5>
+                </div>
+                <div class="card-body">
+                    {% if profile %}
+                        <p><strong>Master Embedding:</strong> ✅ Created</p>
+                        <p><strong>Fusion Confidence:</strong> {{ (profile.fusion_confidence * 100)|round(1) }}%</p>
+                        <p><strong>Sources:</strong> {{ profile.num_fusion_sources }}</p>
+                        <p><strong>Views:</strong> {{ profile.view_types_used }}</p>
+                        <p><strong>Liveness:</strong> {{ '✅ Verified' if profile.liveness_verified else '❌ Not Verified' }}</p>
+                    {% else %}
+                        <p class="text-danger">⚠️ No AI profile found. Please ensure case has valid photos.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Upload Section -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h5>📤 Upload Video for Analysis</h5>
+                </div>
+                <div class="card-body">
+                    <form id="videoUploadForm" enctype="multipart/form-data">
+                        <div class="form-group">
+                            <label for="videoFile">Select CCTV Video File</label>
+                            <input type="file" class="form-control-file" id="videoFile" name="video_file" 
+                                   accept=".mp4,.avi,.mov,.mkv,.wmv,.flv,.webm" required>
+                            <small class="form-text text-muted">
+                                Supported formats: MP4, AVI, MOV, MKV, WMV, FLV, WEBM
+                            </small>
+                        </div>
+
+                        <button type="submit" class="btn btn-success btn-lg" id="analyzeBtn">
+                            <i class="fas fa-play"></i> Start Analysis
+                        </button>
+                    </form>
+
+                    <!-- Progress Bar -->
+                    <div id="progressSection" class="mt-4" style="display: none;">
+                        <h5>Analysis Progress</h5>
+                        <div class="progress">
+                            <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" style="width: 0%">0%</div>
+                        </div>
+                        <p id="progressText" class="mt-2 text-muted">Initializing...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div class="row" id="resultsSection" style="display: none;">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5>🎯 Detection Results</h5>
+                </div>
+                <div class="card-body">
+                    <div id="resultsContent"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Previous Analyses -->
+    {% if previous_analyses %}
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5>📊 Previous Analyses</h5>
+                </div>
+                <div class="card-body">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Video Source</th>
+                                <th>Timestamp</th>
+                                <th>Confidence</th>
+                                <th>Status</th>
+                                <th>Frames</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for det in previous_analyses %}
+                            <tr>
+                                <td>{{ det.created_at.strftime('%d %b %Y %H:%M') }}</td>
+                                <td>{{ det.video_source or 'Unknown' }}</td>
+                                <td>{{ det.timestamp|round(1) }}s</td>
+                                <td>{{ (det.confidence_score * 100)|round(1) }}%</td>
+                                <td><span class="badge badge-{{ 'success' if det.review_status == 'AUTO_CONFIRMED' else 'warning' }}">
+                                    {{ det.review_status }}
+                                </span></td>
+                                <td>{{ det.temporal_frame_count or 1 }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    <a href="{{ url_for('manual_analysis.view_results', case_id=case.id) }}" class="btn btn-primary">
+                        View All Results
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+document.getElementById('videoUploadForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const fileInput = document.getElementById('videoFile');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const progressSection = document.getElementById('progressSection');
+    const progressBar = document.getElementById('progressBar');
+    const progressText = document.getElementById('progressText');
+    const resultsSection = document.getElementById('resultsSection');
+    const resultsContent = document.getElementById('resultsContent');
+    
+    if (!fileInput.files[0]) {
+        alert('Please select a video file');
+        return;
+    }
+    
+    // Disable button and show progress
+    analyzeBtn.disabled = true;
+    progressSection.style.display = 'block';
+    resultsSection.style.display = 'none';
+    
+    // Create form data
+    const formData = new FormData();
+    formData.append('video_file', fileInput.files[0]);
+    
+    try {
+        progressText.textContent = 'Uploading video...';
+        progressBar.style.width = '20%';
+        progressBar.textContent = '20%';
+        
+        const response = await fetch('{{ url_for("manual_analysis.upload_and_analyze", case_id=case.id) }}', {
+            method: 'POST',
+            body: formData
+        });
+        
+        progressBar.style.width = '50%';
+        progressBar.textContent = '50%';
+        progressText.textContent = 'Analyzing video with AI...';
+        
+        const result = await response.json();
+        
+        progressBar.style.width = '100%';
+        progressBar.textContent = '100%';
+        progressText.textContent = 'Analysis complete!';
+        
+        if (result.success) {
+            // Show results
+            resultsSection.style.display = 'block';
+            
+            if (result.detections.length > 0) {
+                let html = `<div class="alert alert-success">
+                    <h5>✅ Person Found!</h5>
+                    <p>Total detections: ${result.total_detections}</p>
+                </div>`;
+                
+                html += '<table class="table table-bordered"><thead><tr><th>Time Range</th><th>Confidence</th><th>Status</th><th>Frames</th></tr></thead><tbody>';
+                
+                result.detections.forEach(det => {
+                    const statusBadge = det.status === 'AUTO_CONFIRMED' ? 'success' : 'warning';
+                    html += `<tr>
+                        <td>${det.start_time.toFixed(1)}s - ${det.end_time.toFixed(1)}s</td>
+                        <td>${(det.confidence * 100).toFixed(1)}%</td>
+                        <td><span class="badge badge-${statusBadge}">${det.status}</span></td>
+                        <td>${det.frame_count}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></table>';
+                resultsContent.innerHTML = html;
+            } else {
+                resultsContent.innerHTML = `<div class="alert alert-info">
+                    <h5>ℹ️ No Detections</h5>
+                    <p>Person not found in this video. Try analyzing different footage.</p>
+                </div>`;
+            }
+            
+            // Reset form
+            fileInput.value = '';
+            analyzeBtn.disabled = false;
+            
+            setTimeout(() => {
+                progressSection.style.display = 'none';
+            }, 2000);
+            
+        } else {
+            throw new Error(result.error || 'Analysis failed');
+        }
+        
+    } catch (error) {
+        alert('Error: ' + error.message);
+        analyzeBtn.disabled = false;
+        progressSection.style.display = 'none';
+    }
+});
+</script>
+{% endblock %}

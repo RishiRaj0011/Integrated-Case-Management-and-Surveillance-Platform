@@ -234,7 +234,7 @@ class XAIFeatureWeightingSystem:
             return "hash_calculation_error"
     
     def _calculate_feature_weights(self, detection_data: Dict) -> FeatureWeights:
-        """Calculate individual feature weights and scores"""
+        """Calculate individual feature weights and scores with pose-adaptive weighting"""
         
         # Extract scores from detection data
         face_score = detection_data.get('face_confidence', 0.0)
@@ -248,17 +248,36 @@ class XAIFeatureWeightingSystem:
         # Adaptive weighting based on available features
         weights = FeatureWeights()
         
-        # Adjust weights based on feature availability and quality
-        if face_score > 0.5:
-            weights.facial_structure_score = face_score
-            weights.facial_structure_weight = 0.5  # Higher weight for good face detection
-        else:
-            weights.facial_structure_score = face_score
-            weights.facial_structure_weight = 0.2  # Lower weight for poor face detection
-            # Increase other weights to compensate
-            weights.clothing_biometric_weight = 0.35
-            weights.body_pose_weight = 0.25
+        # DYNAMIC POSE-BASED WEIGHTING
+        yaw_angle = detection_data.get('pose_yaw', 0.0)
+        pose_category = detection_data.get('pose_category', 'frontal')
         
+        # Classify pose if not provided
+        if -20 <= yaw_angle <= 20:
+            pose_category = 'frontal'
+        elif yaw_angle > 20:
+            pose_category = 'left_side'
+        else:
+            pose_category = 'right_side'
+        
+        # Adjust weights based on pose
+        if pose_category in ['left_side', 'right_side']:
+            # Side profile: decrease facial weight, increase clothing/biometric
+            weights.facial_structure_weight = 0.25
+            weights.clothing_biometric_weight = 0.35
+            weights.body_pose_weight = 0.20
+        else:
+            # Frontal: standard weights
+            if face_score > 0.5:
+                weights.facial_structure_weight = 0.5
+                weights.clothing_biometric_weight = 0.25
+                weights.body_pose_weight = 0.10
+            else:
+                weights.facial_structure_weight = 0.2
+                weights.clothing_biometric_weight = 0.35
+                weights.body_pose_weight = 0.25
+        
+        weights.facial_structure_score = face_score
         weights.clothing_biometric_score = clothing_score
         weights.temporal_consistency_score = temporal_score
         weights.body_pose_score = body_score

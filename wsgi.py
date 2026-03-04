@@ -9,31 +9,15 @@ from __init__ import create_app, db
 
 app = create_app()
 
-# Start automatic location matching service
-try:
-    from auto_location_service import start_auto_service
-    start_auto_service()
-    print("✅ Advanced Location Matching Service started")
-except ImportError:
-    print("⚠️ Auto service not available")
-except Exception as e:
-    print(f"⚠️ Auto service startup failed: {str(e)}")
-    import traceback
-    traceback.print_exc()
-
-# Start continuous learning system
-try:
-    from continuous_learning_system import continuous_learning_system
-    continuous_learning_system._init_learning_db()
-    print("✅ Continuous Learning System initialized")
-except ImportError:
-    print("⚠️ Learning system not available")
-except Exception as e:
-    print(f"⚠️ Learning system startup failed: {str(e)}")
-    import traceback
-    traceback.print_exc()
+# Note: Automated background services (Location & Learning) 
+# have been removed to prioritize Manual AI Analysis and CPU efficiency.
 
 if __name__ == "__main__":
     with app.app_context():
+        # Tables create karega agar nahi bani hain
         db.create_all()
+        print("✅ Database initialized successfully")
+
+    # App run karega
+    print("🚀 Missing Person AI Platform starting on http://localhost:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)

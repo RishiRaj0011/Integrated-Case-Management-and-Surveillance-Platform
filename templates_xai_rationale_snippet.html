@@ -1,0 +1,249 @@
+<!-- 
+XAI RATIONALE DISPLAY - Add to Admin Dashboard
+File: templates/admin/case_details.html or manual_video_analysis.html
+-->
+
+<!-- Add this CSS to your template or static/css/admin.css -->
+<style>
+.xai-rationale {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+}
+
+.xai-rationale h4 {
+    color: #495057;
+    margin-bottom: 15px;
+}
+
+.confidence-badge {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-weight: bold;
+    margin-bottom: 15px;
+}
+
+.confidence-very_high {
+    background: #28a745;
+    color: white;
+}
+
+.confidence-high {
+    background: #17a2b8;
+    color: white;
+}
+
+.confidence-medium {
+    background: #ffc107;
+    color: #212529;
+}
+
+.confidence-low {
+    background: #dc3545;
+    color: white;
+}
+
+.decision-factors {
+    background: #d4edda;
+    border-left: 4px solid #28a745;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+.uncertainty-factors {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+.feature-breakdown {
+    margin-top: 15px;
+}
+
+.feature-breakdown table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.feature-breakdown th,
+.feature-breakdown td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.feature-breakdown th {
+    background: #e9ecef;
+    font-weight: bold;
+}
+
+.progress-bar-custom {
+    height: 20px;
+    background: #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #17a2b8, #28a745);
+    transition: width 0.3s ease;
+}
+</style>
+
+<!-- XAI Rationale Display Component -->
+{% if detection.feature_weights_dict %}
+<div class="xai-rationale">
+    <h4>🤖 AI Decision Rationale</h4>
+    
+    <!-- Confidence Badge -->
+    <div class="confidence-badge confidence-{{ detection.confidence_category }}">
+        Confidence: {{ detection.confidence_category|upper|replace('_', ' ') }}
+        ({{ (detection.confidence_score * 100)|round(1) }}%)
+    </div>
+    
+    <!-- Decision Factors -->
+    {% if detection.decision_factors_list %}
+    <div class="decision-factors">
+        <h5>✅ Why AI Matched This Person:</h5>
+        <ul>
+            {% for factor in detection.decision_factors_list %}
+            <li>{{ factor }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    
+    <!-- Uncertainty Factors -->
+    {% if detection.uncertainty_factors_list %}
+    <div class="uncertainty-factors">
+        <h5>⚠️ Uncertainty Factors:</h5>
+        <ul>
+            {% for factor in detection.uncertainty_factors_list %}
+            <li>{{ factor }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    
+    <!-- Feature Breakdown -->
+    <div class="feature-breakdown">
+        <h5>📊 Feature Contribution Breakdown:</h5>
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Feature</th>
+                    <th>Score</th>
+                    <th>Weight</th>
+                    <th>Contribution</th>
+                    <th>Visual</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for feature, data in detection.feature_weights_dict.items() %}
+                <tr>
+                    <td><strong>{{ feature|replace('_', ' ')|title }}</strong></td>
+                    <td>{{ (data.score * 100)|round(1) }}%</td>
+                    <td>{{ (data.weight * 100)|round(0) }}%</td>
+                    <td>{{ (data.contribution * 100)|round(1) }}%</td>
+                    <td>
+                        <div class="progress-bar-custom">
+                            <div class="progress-fill" style="width: {{ (data.contribution * 100)|round(0) }}%"></div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Confirmation Required -->
+    {% if detection.requires_confirmation %}
+    <div class="alert alert-warning mt-3">
+        <strong>⚠️ Human Confirmation Required</strong><br>
+        This detection requires manual verification by an admin before final approval.
+    </div>
+    {% endif %}
+    
+    <!-- Evidence Integrity -->
+    {% if detection.frame_hash %}
+    <div class="mt-3">
+        <small class="text-muted">
+            <strong>Evidence Integrity:</strong><br>
+            Detection ID: <code>{{ detection.detection_id }}</code><br>
+            Frame Hash: <code>{{ detection.frame_hash[:16] }}...</code>
+        </small>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- 
+USAGE IN DETECTION LOOP:
+
+{% for detection in detections %}
+<div class="detection-card">
+    <h3>Detection at {{ detection.formatted_timestamp }}</h3>
+    <p>Confidence: {{ (detection.confidence_score * 100)|round(1) }}%</p>
+    
+    <!-- Include XAI Rationale -->
+    {% include 'admin/xai_rationale_component.html' %}
+    
+    <!-- Other detection details -->
+</div>
+{% endfor %}
+-->
+
+<!-- 
+ALTERNATIVE: Inline in case_details.html
+
+In your detection display section, add:
+
+<div class="row">
+    <div class="col-md-6">
+        <!-- Detection thumbnail and basic info -->
+        <img src="{{ detection.frame_path }}" alt="Detection">
+        <p>Time: {{ detection.formatted_timestamp }}</p>
+        <p>Confidence: {{ (detection.confidence_score * 100)|round(1) }}%</p>
+    </div>
+    
+    <div class="col-md-6">
+        <!-- XAI Rationale -->
+        [PASTE XAI RATIONALE CODE HERE]
+    </div>
+</div>
+-->
+
+<!-- 
+MINIMAL VERSION (if space is limited):
+
+<div class="xai-mini">
+    <strong>AI Rationale:</strong>
+    <span class="badge badge-{{ detection.confidence_category }}">
+        {{ detection.confidence_category|upper }}
+    </span>
+    
+    <button type="button" class="btn btn-sm btn-info" data-toggle="modal" data-target="#xaiModal{{ detection.id }}">
+        View Details
+    </button>
+</div>
+
+<!-- Modal for full XAI details -->
+<div class="modal fade" id="xaiModal{{ detection.id }}" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">AI Decision Rationale</h5>
+                <button type="button" class="close" data-dismiss="modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                [PASTE FULL XAI RATIONALE CODE HERE]
+            </div>
+        </div>
+    </div>
+</div>
+-->

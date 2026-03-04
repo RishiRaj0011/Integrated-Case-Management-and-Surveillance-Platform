@@ -957,15 +957,9 @@ def register_case():
             except Exception as e:
                 print(f"AI Analysis failed for case {new_case.id}: {str(e)}")
             
-            # Initialize advanced location matching for approved cases
-            try:
-                from advanced_location_matcher import advanced_matcher
-                if new_case.status == 'Approved':
-                    # Auto-process location matching
-                    matches_created = advanced_matcher.auto_process_approved_case(new_case.id)
-                    print(f"Advanced location matching: {matches_created} matches created for case {new_case.id}")
-            except Exception as e:
-                print(f"Advanced location matching failed for case {new_case.id}: {str(e)}")
+            # Location matching removed - Admin will manually upload videos for analysis
+            if new_case.status == 'Approved':
+                print(f"✅ Case {new_case.id} approved - Ready for manual video analysis by admin")
             
             # Don't start AI processing - wait for admin approval
             success_msg = f"{case_type_display} request for {new_case.person_name} has been submitted successfully! Your case is now pending admin approval and will be processed accordingly."
@@ -1103,29 +1097,22 @@ def profile():
 @login_required
 @case_owner_required
 def case_details(case_id):
-    """View detailed information about a specific case with AI analysis results"""
+    """View detailed information about a specific case"""
     try:
         case = Case.query.get_or_404(case_id)
         
-        # Get AI analysis results
-        from models import LocationMatch, PersonDetection
-        location_matches = LocationMatch.query.filter_by(case_id=case_id).all()
-        
-        # Get all detections for this case
-        all_detections = []
-        for match in location_matches:
-            detections = PersonDetection.query.filter_by(location_match_id=match.id).all()
-            for detection in detections:
-                detection.match = match  # Add match info to detection
-                all_detections.append(detection)
-        
-        # Sort detections by confidence score
-        all_detections.sort(key=lambda x: x.confidence_score, reverse=True)
+        # Get manual analysis detections (if any)
+        try:
+            from models import PersonDetection
+            all_detections = PersonDetection.query.filter_by(case_id=case_id).order_by(
+                PersonDetection.confidence_score.desc()
+            ).all()
+        except:
+            all_detections = []
         
         return render_template(
             "case_details.html", 
             case=case,
-            location_matches=location_matches,
             detections=all_detections
         )
         
