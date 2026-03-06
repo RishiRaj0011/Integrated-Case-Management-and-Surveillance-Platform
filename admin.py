@@ -157,33 +157,17 @@ def dashboard():
     # AI Analysis Statistics with error handling
     try:
         from models import LocationMatch, PersonDetection, SurveillanceFootage
-        # Only count real footage (not test data)
-        real_footage_count = SurveillanceFootage.query.filter(
-            and_(
-                ~SurveillanceFootage.video_path.like('%test%'),
-                ~SurveillanceFootage.title.like('%Test%')
-            )
+        # FIXED: Count ALL footage (no test filtering)
+        real_footage_count = SurveillanceFootage.query.count()
+        total_location_matches = LocationMatch.query.count()
+        successful_detections = LocationMatch.query.filter(
+            LocationMatch.person_found == True
         ).count()
-        total_location_matches = LocationMatch.query.join(SurveillanceFootage).filter(
-            and_(
-                ~SurveillanceFootage.video_path.like('%test%'),
-                ~SurveillanceFootage.title.like('%Test%')
-            )
+        pending_analysis = LocationMatch.query.filter(
+            LocationMatch.status == 'pending'
         ).count()
-        successful_detections = LocationMatch.query.join(SurveillanceFootage).filter(
-            LocationMatch.person_found == True,
-            ~SurveillanceFootage.video_path.like('%test%'),
-            ~SurveillanceFootage.title.like('%Test%')
-        ).count()
-        pending_analysis = LocationMatch.query.join(SurveillanceFootage).filter(
-            LocationMatch.status == 'pending',
-            ~SurveillanceFootage.video_path.like('%test%'),
-            ~SurveillanceFootage.title.like('%Test%')
-        ).count()
-        processing_analysis = LocationMatch.query.join(SurveillanceFootage).filter(
-            LocationMatch.status == 'processing',
-            ~SurveillanceFootage.video_path.like('%test%'),
-            ~SurveillanceFootage.title.like('%Test%')
+        processing_analysis = LocationMatch.query.filter(
+            LocationMatch.status == 'processing'
         ).count()
     except Exception:
         real_footage_count = 0
@@ -191,6 +175,14 @@ def dashboard():
         successful_detections = 0
         pending_analysis = 0
         processing_analysis = 0
+    
+    # Get recent uploads for activity feed
+    try:
+        recent_uploads = SurveillanceFootage.query.order_by(
+            desc(SurveillanceFootage.created_at)
+        ).limit(5).all()
+    except:
+        recent_uploads = []
     
     # Mark dashboard notifications as read when admin visits dashboard
     from flask import session
@@ -221,6 +213,7 @@ def dashboard():
         active_announcements=active_announcements,
         pending_approvals=pending_approvals,
         pending_cases=pending_approvals,
+        recent_uploads=recent_uploads,
         # Comprehensive status counts for admin
         admin_status_counts=admin_status_counts,
         approved_cases=approved_cases,
@@ -1382,33 +1375,29 @@ def close_chat(room_id):
 @login_required
 @admin_required
 def surveillance_footage():
-    """Surveillance footage management"""
-    from models import SurveillanceFootage
+    """Surveillance footage management - FIXED: Show ALL footage with integrity checks"""
+    from models import SurveillanceFootage, LocationMatch
+    import os
     
     page = request.args.get('page', 1, type=int)
-    # Only show real footage (exclude test data)
-    footage_list = SurveillanceFootage.query.filter(
-        and_(
-            ~SurveillanceFootage.video_path.like('%test%'),
-            ~SurveillanceFootage.title.like('%Test%')
-        )
-    ).order_by(desc(SurveillanceFootage.created_at)).paginate(
-        page=page, per_page=12, error_out=False
-    )
     
-    # AI Analysis Statistics (exclude test data)
-    from models import LocationMatch
-    total_matches = LocationMatch.query.join(SurveillanceFootage).filter(
-        and_(
-            ~SurveillanceFootage.video_path.like('%test%'),
-            ~SurveillanceFootage.title.like('%Test%')
-        )
-    ).count()
-    successful_detections = LocationMatch.query.join(SurveillanceFootage).filter(
-        LocationMatch.person_found == True,
-        ~SurveillanceFootage.video_path.like('%test%'),
-        ~SurveillanceFootage.title.like('%Test%')
-    ).count()
+    # FIXED: Show ALL footage, no test filtering
+    footage_query = SurveillanceFootage.query.order_by(desc(SurveillanceFootage.created_at))
+    footage_list = footage_query.paginate(page=page, per_page=12, error_out=False)
+    
+    # Add file integrity check to each footage
+    for footage in footage_list.items:
+        file_path = os.path.join('static', footage.video_path)
+        footage.file_exists = os.path.exists(file_path)
+        
+        # Get analysis status
+        matches = LocationMatch.query.filter_by(footage_id=footage.id).all()
+        footage.analysis_status = 'completed' if any(m.status == 'completed' for m in matches) else 'pending'
+        footage.person_found = any(m.person_found for m in matches)
+    
+    # FIXED: Count ALL matches and detections
+    total_matches = LocationMatch.query.count()
+    successful_detections = LocationMatch.query.filter_by(person_found=True).count()
     
     return render_template(
         "admin/surveillance_footage.html", 
@@ -1759,21 +1748,13 @@ def location_insights():
         func.count(Case.id).label('case_count')
     ).filter(Case.last_seen_location.isnot(None)).group_by(Case.last_seen_location).order_by(desc('case_count')).all()
     
-    # Get CCTV coverage data (exclude test data) - FIXED
+    # FIXED: Get ALL CCTV coverage data (no test filtering)
     cctv_locations = SurveillanceFootage.query.filter(
-        and_(
-            ~SurveillanceFootage.video_path.like('%test%'),
-            ~SurveillanceFootage.title.like('%Test%'),
-            SurveillanceFootage.location_name.isnot(None)
-        )
+        SurveillanceFootage.location_name.isnot(None)
     ).with_entities(
         SurveillanceFootage.location_name,
         func.count(SurveillanceFootage.id).label('camera_count')
     ).group_by(SurveillanceFootage.location_name).all()
-    
-    # Debug print to verify correct count
-    print(f"DEBUG: CCTV locations count = {len(cctv_locations)}")
-    print(f"DEBUG: CCTV locations data = {cctv_locations}")
     
     # Calculate coverage gaps
     case_locations = set([stat[0].lower() for stat in location_stats])
@@ -2449,27 +2430,19 @@ def system_status():
         except Exception as e:
             ai_status = f'Error - {str(e)}'
         
-        # System statistics (exclude test data)
+        # FIXED: System statistics (show ALL data, no test filtering)
         stats = {
             'total_cases': Case.query.count(),
             'pending_cases': Case.query.filter_by(status='Pending Approval').count(),
             'active_cases': Case.query.filter(Case.status.in_(['Queued', 'Processing', 'Active'])).count(),
-            'total_footage': SurveillanceFootage.query.filter(
-                ~SurveillanceFootage.video_path.like('%test%')
+            'total_footage': SurveillanceFootage.query.count(),
+            'total_matches': LocationMatch.query.count(),
+            'processing_matches': LocationMatch.query.filter(
+                LocationMatch.status == 'processing'
             ).count(),
-            'total_matches': LocationMatch.query.join(SurveillanceFootage).filter(
-                ~SurveillanceFootage.video_path.like('%test%')
-            ).count(),
-            'processing_matches': LocationMatch.query.join(SurveillanceFootage).filter(
-                LocationMatch.status == 'processing',
-                ~SurveillanceFootage.video_path.like('%test%')
-            ).count(),
-            'total_detections': PersonDetection.query.join(LocationMatch).join(SurveillanceFootage).filter(
-                ~SurveillanceFootage.video_path.like('%test%')
-            ).count(),
-            'verified_detections': PersonDetection.query.join(LocationMatch).join(SurveillanceFootage).filter(
-                PersonDetection.verified == True,
-                ~SurveillanceFootage.video_path.like('%test%')
+            'total_detections': PersonDetection.query.count(),
+            'verified_detections': PersonDetection.query.filter(
+                PersonDetection.verified == True
             ).count()
         }
         

@@ -112,44 +112,36 @@ def create_app(config_class=Config):
     from error_handlers import register_error_handlers
     app.register_blueprint(main_bp)
     
-    # Register blueprints with proper error handling and conflict prevention
-    blueprints = [
-        ('admin', 'admin_bp', '/admin'),
-        ('continuous_learning_routes', 'learning_bp', '/admin/learning'),
-        ('location_matching_routes', 'location_bp', '/admin/location'),
-        ('enhanced_admin_routes', 'enhanced_admin_bp', '/admin/enhanced')
-    ]
+    # Register blueprints - SIMPLIFIED
+    try:
+        from admin import admin_bp
+        app.register_blueprint(admin_bp)
+        print(f"[OK] Blueprint: admin_bp registered at {admin_bp.url_prefix}")
+    except Exception as e:
+        print(f"[CRITICAL] admin_bp failed: {e}")
+        import traceback
+        traceback.print_exc()
     
-    registered_endpoints = set()
+    try:
+        from continuous_learning_routes import learning_bp
+        app.register_blueprint(learning_bp)
+        print(f"[OK] Blueprint: learning_bp registered at {learning_bp.url_prefix}")
+    except Exception as e:
+        print(f"[WARN] learning_bp failed: {e}")
     
-    for module_name, bp_name, expected_prefix in blueprints:
-        try:
-            module = __import__(module_name)
-            blueprint = getattr(module, bp_name)
-            
-            # Check for endpoint conflicts before registration
-            blueprint_endpoints = set()
-            for rule in blueprint.url_map.iter_rules() if hasattr(blueprint, 'url_map') else []:
-                endpoint = rule.endpoint
-                if endpoint in registered_endpoints:
-                    print(f"[WARN] Blueprint {bp_name}: Skipping duplicate endpoint {endpoint}")
-                    continue
-                blueprint_endpoints.add(endpoint)
-            
-            # Register blueprint
-            app.register_blueprint(blueprint)
-            registered_endpoints.update(blueprint_endpoints)
-            print(f"[OK] Blueprint: {bp_name} registered at {blueprint.url_prefix}")
-            
-        except ImportError as e:
-            print(f"[FAIL] Blueprint {bp_name}: Import failed - {e}")
-        except AttributeError as e:
-            print(f"[FAIL] Blueprint {bp_name}: Attribute error - {e}")
-        except AssertionError as e:
-            print(f"[FAIL] Blueprint {bp_name}: AssertionError - {e}")
-            # Continue with other blueprints even if one fails
-        except Exception as e:
-            print(f"[FAIL] Blueprint {bp_name}: {type(e).__name__} - {e}")
+    try:
+        from location_matching_routes import location_bp
+        app.register_blueprint(location_bp)
+        print(f"[OK] Blueprint: location_bp registered at {location_bp.url_prefix}")
+    except Exception as e:
+        print(f"[WARN] location_bp failed: {e}")
+    
+    try:
+        from enhanced_admin_routes import enhanced_admin_bp
+        app.register_blueprint(enhanced_admin_bp)
+        print(f"[OK] Blueprint: enhanced_admin_bp registered at {enhanced_admin_bp.url_prefix}")
+    except Exception as e:
+        print(f"[WARN] enhanced_admin_bp failed: {e}")
     
     register_error_handlers(app)
     
