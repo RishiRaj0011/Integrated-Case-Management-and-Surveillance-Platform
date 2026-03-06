@@ -70,12 +70,13 @@ class VisionEngine:
         except Exception as e:
             logger.error(f"❌ XAI system init failed: {e}")
     
-    def detect_person(self, frame, target_encoding=None, case_id=None, strict_mode=True):
+    def detect_person(self, frame, target_encoding=None, case_id=None, strict_mode=True, person_profile=None):
         """
-        Detect person with strict landmark filtering (dynamic threshold)
+        Detect person with quality filtering and strict landmark validation
         
         Args:
             strict_mode: If True, requires 2 eyes + nose + mouth + dynamic confidence
+            person_profile: PersonProfile object with multi-view encodings
         """
         # CRITICAL: Reload config for every detection (Celery worker sync)
         self.ai_config = self._load_ai_config()
@@ -86,10 +87,39 @@ class VisionEngine:
         if case_id:
             self.case_id = case_id
         
-        detection_data = self._build_detection_data_strict(frame, target_encoding, strict_mode)
+        # Use multi-view encodings if profile provided
+        if person_profile and not target_encoding:
+            # Try matching against all available encodings
+            all_encodings = person_profile.face_encodings_list
+            if all_encodings:
+                target_encoding = all_encodings[0]  # Use first as primary
+        
+        detection_data = self._build_detection_data_strict(frame, target_encoding, strict_mode, person_profile)
         
         if not detection_data:
             return None
+        
+        # QUALITY FILTER: Check face size (min 40x40 pixels)
+        bbox = detection_data.get('bbox', (0, 0, 0, 0))
+        face_width = bbox[2] if len(bbox) > 2 else 0
+        face_height = bbox[3] if len(bbox) > 3 else 0
+        
+        if face_width < 40 or face_height < 40:
+            logger.debug(f"Face too small: {face_width}x{face_height} - skipping")
+            return None
+        
+        # QUALITY FILTER: Check blur (Laplacian variance)
+        try:
+            x, y, w, h = bbox
+            face_roi = frame[y:y+h, x:x+w]
+            gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            blur_score = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+            
+            if blur_score < 100:  # Threshold for blur detection
+                logger.debug(f"Face too blurry: {blur_score:.1f} - skipping")
+                return None
+        except Exception as e:
+            logger.debug(f"Blur check failed: {e}")
         
         # Save extracted frame with SHA-256 hash
         frame_path = self._save_detection_frame(frame, detection_data)
@@ -456,8 +486,12 @@ def get_vision_engine(case_id=None):
             logger.error(f"❌ Failed to save detection frame: {e}")
             return ""
     
-    def _build_detection_data_strict(self, frame, target_encoding, strict_mode=True):
-        """Build detection with STRICT landmark filtering: 2 eyes + nose + mouth required"""
+    def _build_detection_data_strict(self, frame, target_encoding, strict_mode=True, person_profile=None):
+        """Build detection with STRICT landmark filtering: 2 eyes + nose + mouth required
+        
+        Args:
+            person_profile: PersonProfile with multi-view encodings for better matching
+        """
         try:
             import face_recognition
             
@@ -480,6 +514,17 @@ def get_vision_engine(case_id=None):
             is_frontal = False
             face_pose_angles = None
             xai_factors = []
+            matched_view = 'unknown'
+            
+            # Prepare multi-view encodings if available
+            multi_view_encodings = {}
+            if person_profile:
+                multi_view_encodings = {
+                    'front': person_profile.front_encodings_list,
+                    'left_profile': person_profile.left_profile_encodings_list,
+                    'right_profile': person_profile.right_profile_encodings_list,
+                    'video': person_profile.video_encodings_list
+                }
             
             for idx, (face_encoding, face_location) in enumerate(zip(face_encodings, face_locations)):
                 # STRICT LANDMARK CHECK: Must have 2 eyes + nose + mouth
@@ -522,16 +567,39 @@ def get_vision_engine(case_id=None):
                         f"Frontal pose: Yaw {pose_angles['yaw']:.1f}°, Pitch {pose_angles['pitch']:.1f}°"
                     ]
                 
-                # Calculate confidence
-                if target_encoding is not None:
-                    distance = face_recognition.face_distance([target_encoding], face_encoding)[0]
-                    confidence = max(0.0, 1.0 - distance)
+                # Calculate confidence with multi-view matching
+                if target_encoding is not None or multi_view_encodings:
+                    # Try matching against all available encodings
+                    best_view_confidence = 0.0
+                    best_view_name = 'primary'
+                    
+                    # Match against primary encoding
+                    if target_encoding is not None:
+                        distance = face_recognition.face_distance([target_encoding], face_encoding)[0]
+                        confidence = max(0.0, 1.0 - distance)
+                        if confidence > best_view_confidence:
+                            best_view_confidence = confidence
+                            best_view_name = 'primary'
+                    
+                    # Match against multi-view encodings
+                    for view_name, view_encodings in multi_view_encodings.items():
+                        if not view_encodings:
+                            continue
+                        for view_enc in view_encodings:
+                            distance = face_recognition.face_distance([view_enc], face_encoding)[0]
+                            confidence = max(0.0, 1.0 - distance)
+                            if confidence > best_view_confidence:
+                                best_view_confidence = confidence
+                                best_view_name = view_name
+                    
+                    confidence = best_view_confidence
+                    matched_view = best_view_name
                     
                     # Apply 0.88 threshold
                     if confidence < self.ai_config.get('threshold', 0.88):
                         continue
                     
-                    xai_factors.append(f"Face match confidence: {confidence * 100:.1f}%")
+                    xai_factors.append(f"Face match confidence: {confidence * 100:.1f}% (matched view: {matched_view})")
                     
                     if confidence > best_confidence:
                         best_confidence = confidence
@@ -554,13 +622,14 @@ def get_vision_engine(case_id=None):
                 'face_confidence': best_confidence,
                 'confidence_score': best_confidence,
                 'face_match_score': best_confidence,
+                'matched_view': matched_view,
                 'bbox': bbox,
                 'detection_box': bbox,
                 'face_encoding': best_match.tolist(),
                 'timestamp': 0.0,
                 'case_id': self.case_id or 0,
                 'footage_id': 0,
-                'method': 'strict_landmarks_0.88',
+                'method': f'multi_view_strict_{matched_view}',
                 'is_frontal_face': is_frontal,
                 'face_pose_yaw': face_pose_angles['yaw'] if face_pose_angles else 0,
                 'face_pose_pitch': face_pose_angles['pitch'] if face_pose_angles else 0,

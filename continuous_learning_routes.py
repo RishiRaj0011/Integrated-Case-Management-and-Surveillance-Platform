@@ -12,7 +12,7 @@ import io
 from continuous_learning_system import continuous_learning_system
 from learning_integration import learning_integration
 
-learning_bp = Blueprint("learning", __name__, url_prefix="/admin")
+learning_bp = Blueprint("learning", __name__, url_prefix="/admin/learning")
 
 def admin_required(f):
     @wraps(f)

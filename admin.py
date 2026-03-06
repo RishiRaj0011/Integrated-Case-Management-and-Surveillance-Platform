@@ -1242,74 +1242,7 @@ def archive_announcement(announcement_id):
     return redirect(url_for("admin.announcements"))
 
 
-# AI Settings Management
-@admin_bp.route("/ai-settings")
-@login_required
-@admin_required
-def ai_settings():
-    settings = AISettings.query.all()
-    
-    # Initialize default settings if none exist
-    if not settings:
-        default_settings = [
-            ('confidence_threshold', '0.7', 'Minimum confidence score for matches'),
-            ('max_processing_time', '300', 'Maximum processing time per video (seconds)'),
-            ('face_detection_model', 'hog', 'Face detection model (hog/cnn)'),
-            ('enable_clothing_analysis', 'true', 'Enable clothing-based matching')
-        ]
-        
-        for name, value, desc in default_settings:
-            setting = AISettings(setting_name=name, setting_value=value, description=desc, updated_by=current_user.id)
-            db.session.add(setting)
-        
-        db.session.commit()
-        settings = AISettings.query.all()
-    
-    return render_template("admin/ai_settings.html", settings=settings)
-
-
-@admin_bp.route("/ai-settings", methods=["POST"])
-@login_required
-@admin_required
-def update_ai_settings():
-    """Handle AI settings form submission"""
-    try:
-        updated_count = 0
-        
-        for setting_id, value in request.form.items():
-            if setting_id.startswith('setting_'):
-                setting_id = setting_id.replace('setting_', '')
-                setting = AISettings.query.get(setting_id)
-                if setting:
-                    # Handle checkbox values (they only appear in form if checked)
-                    if setting.setting_name.startswith('enable_'):
-                        setting.setting_value = 'true'
-                    else:
-                        setting.setting_value = value
-                    
-                    setting.updated_by = current_user.id
-                    setting.updated_at = datetime.utcnow()
-                    updated_count += 1
-        
-        # Handle unchecked checkboxes (they don't appear in form data)
-        all_settings = AISettings.query.all()
-        for setting in all_settings:
-            if setting.setting_name.startswith('enable_'):
-                checkbox_name = f'setting_{setting.id}'
-                if checkbox_name not in request.form:
-                    setting.setting_value = 'false'
-                    setting.updated_by = current_user.id
-                    setting.updated_at = datetime.utcnow()
-                    updated_count += 1
-        
-        db.session.commit()
-        flash(f"✅ AI settings updated successfully! {updated_count} settings modified.", "success")
-        
-    except Exception as e:
-        db.session.rollback()
-        flash(f"❌ Error updating AI settings: {str(e)}", "error")
-    
-    return redirect(url_for("admin.ai_settings"))
+# AI Settings Management - Removed duplicate, using AI Settings Control Center below
 
 
 # Content Management
@@ -4738,3 +4671,179 @@ def api_system_logs():
         
     except Exception as e:
         return jsonify({'logs': [f'Error loading logs: {str(e)}']})
+
+
+# ===== TARGETED FIND WORKFLOW =====
+
+@admin_bp.route('/api/approved-cases')
+@login_required
+@admin_required
+def get_approved_cases():
+    """Get list of approved cases for targeted find"""
+    try:
+        approved_cases = Case.query.filter_by(status='Approved').order_by(Case.created_at.desc()).all()
+        
+        cases_data = [{
+            'id': case.id,
+            'person_name': case.person_name,
+            'age': case.age or 'Unknown',
+            'location': case.last_seen_location
+        } for case in approved_cases]
+        
+        return jsonify({'success': True, 'cases': cases_data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@admin_bp.route('/api/case-preview/<int:case_id>')
+@login_required
+@admin_required
+def get_case_preview(case_id):
+    """Get case preview for modal"""
+    try:
+        case = Case.query.get_or_404(case_id)
+        return jsonify({
+            'success': True,
+            'person_name': case.person_name,
+            'age': case.age or 'Unknown',
+            'location': case.last_seen_location
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@admin_bp.route('/admin/api/targeted-analysis', methods=['POST'])
+@login_required
+@admin_required
+def targeted_analysis():
+    """Start targeted deep scan for specific case and footage"""
+    try:
+        data = request.get_json()
+        case_id = data.get('case_id')
+        footage_id = data.get('footage_id')
+        
+        if not case_id or not footage_id:
+            return jsonify({'success': False, 'error': 'Missing case_id or footage_id'})
+        
+        case = Case.query.get_or_404(case_id)
+        footage = SurveillanceFootage.query.get_or_404(footage_id)
+        
+        # Create or update LocationMatch with manual_targeted type
+        existing_match = LocationMatch.query.filter_by(
+            case_id=case_id,
+            footage_id=footage_id
+        ).first()
+        
+        if existing_match:
+            match = existing_match
+            match.status = 'pending'
+            match.match_type = 'manual_targeted'
+        else:
+            match = LocationMatch(
+                case_id=case_id,
+                footage_id=footage_id,
+                match_score=1.0,
+                match_type='manual_targeted',
+                status='pending'
+            )
+            db.session.add(match)
+        
+        db.session.commit()
+        
+        # Trigger Celery task for frame-by-frame analysis
+        try:
+            from tasks import analyze_footage_match
+            analyze_footage_match.delay(match.id)
+            message = f'Deep scan started for {case.person_name} in {footage.title}'
+        except:
+            # Fallback: direct analysis
+            from location_matching_engine import location_engine
+            location_engine.analyze_footage_for_person(match.id, frame_skip=1)
+            message = f'Deep scan started (direct mode)'
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'match_id': match.id
+        })
+        
+    except Exception as e:
+        logger.error(f"Targeted analysis error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@admin_bp.route('/ai-analysis/<int:match_id>/forensic-timeline')
+@login_required
+@admin_required
+def forensic_timeline(match_id):
+    """Forensic timeline view with evidence integrity display"""
+    try:
+        match = LocationMatch.query.get_or_404(match_id)
+        
+        # Get all detections with confidence >= 0.88, ordered by timestamp
+        detections = PersonDetection.query.filter(
+            PersonDetection.location_match_id == match_id,
+            PersonDetection.confidence_score >= 0.88
+        ).order_by(PersonDetection.timestamp).all()
+        
+        # Ensure matched_view is populated for all detections
+        for detection in detections:
+            if not detection.matched_view:
+                detection.matched_view = 'unknown'
+        
+        return render_template(
+            'admin/forensic_timeline.html',
+            match=match,
+            detections=detections
+        )
+    except Exception as e:
+        logger.error(f"Error loading forensic timeline: {e}")
+        flash(f"Error: {str(e)}", "error")
+        return redirect(url_for('admin.ai_analysis'))
+
+
+@admin_bp.route('/api/download-evidence/<int:detection_id>')
+@login_required
+@admin_required
+def download_evidence(detection_id):
+    """Download evidence package for a detection"""
+    try:
+        detection = PersonDetection.query.get_or_404(detection_id)
+        
+        # Create evidence package (ZIP with frame + metadata)
+        import zipfile
+        import io
+        import json
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add frame image
+            if detection.frame_path:
+                frame_path = os.path.join('static', detection.frame_path)
+                if os.path.exists(frame_path):
+                    zip_file.write(frame_path, f"evidence_frame_{detection.evidence_number}.jpg")
+            
+            # Add metadata JSON
+            metadata = {
+                'evidence_number': detection.evidence_number,
+                'timestamp': detection.formatted_timestamp,
+                'confidence_score': detection.confidence_score,
+                'matched_view': detection.matched_view,
+                'frame_hash': detection.frame_hash,
+                'detection_method': detection.analysis_method,
+                'case_id': detection.location_match.case_id,
+                'footage_id': detection.location_match.footage_id
+            }
+            zip_file.writestr('metadata.json', json.dumps(metadata, indent=2))
+        
+        zip_buffer.seek(0)
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'evidence_{detection.evidence_number}.zip'
+        )
+    except Exception as e:
+        logger.error(f"Error downloading evidence: {e}")
+        flash("Error downloading evidence", "error")
+        return redirect(url_for('admin.ai_analysis'))

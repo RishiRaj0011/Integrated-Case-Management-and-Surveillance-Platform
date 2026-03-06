@@ -106,6 +106,9 @@
                                     <i class="fas fa-play me-2"></i>Play Video
                                 </a></li>
                                 <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item text-success" href="#" onclick="openTargetedFindModal({{ footage.id }})">
+                                    <i class="fas fa-search-plus me-2"></i>🔍 Targeted Find
+                                </a></li>
                                 <li><a class="dropdown-item text-primary" href="#" onclick="startAIAnalysis({{ footage.id }})">
                                     <i class="fas fa-brain me-2"></i>Start AI Analysis
                                 </a></li>
@@ -252,7 +255,129 @@
     </div>
 </div>
 
+<!-- Targeted Find Modal -->
+<div class="modal fade" id="targetedFindModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title"><i class="fas fa-search-plus me-2"></i>🔍 Targeted Find</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">Select a case to perform deep forensic scan (frame-by-frame analysis)</p>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Select Case (Person)</label>
+                    <select class="form-select" id="targetedCaseSelect">
+                        <option value="">-- Select Approved Case --</option>
+                    </select>
+                </div>
+                <div id="casePreview" class="d-none">
+                    <div class="card bg-light">
+                        <div class="card-body">
+                            <h6 class="mb-2">Selected Case:</h6>
+                            <div id="casePreviewContent"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="startDeepScanBtn" disabled>
+                    <i class="fas fa-search-plus me-2"></i>Start Deep Scan
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
+let currentFootageId = null;
+
+function openTargetedFindModal(footageId) {
+    currentFootageId = footageId;
+    
+    // Load approved cases
+    fetch('/admin/api/approved-cases')
+        .then(response => response.json())
+        .then(data => {
+            const select = document.getElementById('targetedCaseSelect');
+            select.innerHTML = '<option value="">-- Select Approved Case --</option>';
+            
+            data.cases.forEach(c => {
+                const option = document.createElement('option');
+                option.value = c.id;
+                option.textContent = `#${c.id} - ${c.person_name} (Age: ${c.age || 'Unknown'})`;
+                select.appendChild(option);
+            });
+            
+            new bootstrap.Modal(document.getElementById('targetedFindModal')).show();
+        })
+        .catch(error => {
+            console.error('Error loading cases:', error);
+            alert('Error loading approved cases');
+        });
+}
+
+document.getElementById('targetedCaseSelect')?.addEventListener('change', function() {
+    const caseId = this.value;
+    const btn = document.getElementById('startDeepScanBtn');
+    
+    if (caseId) {
+        btn.disabled = false;
+        // Show case preview
+        fetch(`/admin/api/case-preview/${caseId}`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('casePreview').classList.remove('d-none');
+                document.getElementById('casePreviewContent').innerHTML = `
+                    <strong>${data.person_name}</strong><br>
+                    <small>Age: ${data.age || 'Unknown'} | Location: ${data.location}</small>
+                `;
+            });
+    } else {
+        btn.disabled = true;
+        document.getElementById('casePreview').classList.add('d-none');
+    }
+});
+
+document.getElementById('startDeepScanBtn')?.addEventListener('click', function() {
+    const caseId = document.getElementById('targetedCaseSelect').value;
+    if (!caseId || !currentFootageId) return;
+    
+    this.disabled = true;
+    this.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Starting...';
+    
+    fetch('/admin/api/targeted-analysis', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        },
+        body: JSON.stringify({
+            case_id: parseInt(caseId),
+            footage_id: parseInt(currentFootageId)
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(`✅ Deep Scan Started!\n\n${data.message}\n\nThis will scan every frame for maximum accuracy.`);
+            bootstrap.Modal.getInstance(document.getElementById('targetedFindModal')).hide();
+            location.reload();
+        } else {
+            alert(`❌ Error: ${data.error}`);
+            this.disabled = false;
+            this.innerHTML = '<i class="fas fa-search-plus me-2"></i>Start Deep Scan';
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('❌ Error starting deep scan');
+        this.disabled = false;
+        this.innerHTML = '<i class="fas fa-search-plus me-2"></i>Start Deep Scan';
+    });
+});
+
 function viewFootageDetails(footageId) {
     // Load footage details via AJAX
     fetch(`/admin/surveillance-footage/${footageId}/details`)

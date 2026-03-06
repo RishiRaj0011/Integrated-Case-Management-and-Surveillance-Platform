@@ -11,7 +11,7 @@ import uuid
 import os
 from datetime import datetime
 
-enhanced_admin_bp = Blueprint('enhanced_admin', __name__, url_prefix='/admin')
+enhanced_admin_bp = Blueprint('enhanced_admin', __name__, url_prefix='/admin/enhanced')
 
 @enhanced_admin_bp.route("/enhanced-surveillance-upload", methods=["GET", "POST"])
 @login_required

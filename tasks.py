@@ -26,19 +26,33 @@ class MemoryAwareTask(Task):
 
 @celery.task(base=MemoryAwareTask, bind=True, max_retries=3)
 def analyze_footage_match(self, match_id):
-    """Analyze single footage match with memory check"""
+    """Analyze single footage match with smart snapshot sampling"""
     with app.app_context():
         try:
+            import os
             from location_matching_engine import location_engine
             
             match = LocationMatch.query.get(match_id)
             if not match:
                 return {'success': False, 'error': 'Match not found'}
             
+            # Auto-create detection folder
+            detection_dir = os.path.join('static', 'detections', f'match_{match_id}')
+            os.makedirs(detection_dir, exist_ok=True)
+            logger.info(f"Detection folder ready: {detection_dir}")
+            
             match.status = 'processing'
             db.session.commit()
             
-            success = location_engine.analyze_footage_for_person(match_id)
+            # Check if manual_targeted for smart sampling
+            frame_skip = 1 if match.match_type == 'manual_targeted' else 10
+            snapshot_interval = 60 if match.match_type == 'manual_targeted' else 30  # 2 seconds at 30fps
+            
+            success = location_engine.analyze_footage_for_person(
+                match_id, 
+                frame_skip=frame_skip,
+                snapshot_interval=snapshot_interval
+            )
             
             return {'success': success, 'match_id': match_id}
             

@@ -525,18 +525,44 @@ def register_case():
                         if consistency_result.get('primary_person_encoding'):
                             try:
                                 from models import PersonProfile
+                                from multi_view_face_extractor import get_face_extractor
                                 import json
                                 
+                                # Extract multi-view encodings from uploaded images
+                                extractor = get_face_extractor()
+                                
+                                # Get image paths (up to 3 for Front, Left, Right)
+                                image_paths = [os.path.join("static", img.image_path) for img in new_case.target_images[:3]]
+                                
+                                # Get video path if available
+                                video_path = None
+                                if new_case.search_videos:
+                                    video_path = os.path.join("static", new_case.search_videos[0].video_path)
+                                
+                                # Create comprehensive person profile
+                                profile_data = extractor.create_person_profile(
+                                    new_case.id,
+                                    image_paths,
+                                    video_path
+                                )
+                                
+                                # Create PersonProfile record
                                 person_profile = PersonProfile(
                                     case_id=new_case.id,
-                                    primary_face_encoding=json.dumps(consistency_result['primary_person_encoding']),
-                                    face_quality_score=consistency_result['confidence_score'],
-                                    profile_confidence=consistency_result['confidence_score']
+                                    primary_face_encoding=profile_data['primary_face_encoding'],
+                                    all_face_encodings=profile_data['all_face_encodings'],
+                                    front_encodings=profile_data.get('front_encodings'),
+                                    left_profile_encodings=profile_data.get('left_profile_encodings'),
+                                    right_profile_encodings=profile_data.get('right_profile_encodings'),
+                                    video_encodings=profile_data.get('video_encodings'),
+                                    total_encodings=profile_data['total_encodings'],
+                                    face_quality_score=profile_data['face_quality_score'],
+                                    profile_confidence=profile_data['profile_confidence']
                                 )
                                 db.session.add(person_profile)
-                                print(f"✅ Person profile created for case #{new_case.id}")
+                                print(f"✅ Multi-view person profile created for case #{new_case.id} with {profile_data['total_encodings']} encodings")
                             except Exception as e:
-                                print(f"⚠️ Failed to create person profile: {str(e)}")
+                                print(f"⚠️ Failed to create multi-view person profile: {str(e)}")
                     
                     # Store consistency validation results in database
                     try:

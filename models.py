@@ -1207,9 +1207,17 @@ class PersonProfile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     case_id = db.Column(db.Integer, db.ForeignKey("case.id"), nullable=False)
     
-    # Facial Recognition Data
-    primary_face_encoding = db.Column(db.Text)  # JSON array of face encoding
-    all_face_encodings = db.Column(db.Text)  # JSON array of all encodings
+    # Facial Recognition Data - Multi-View Support
+    primary_face_encoding = db.Column(db.Text)  # JSON array of best quality face encoding
+    all_face_encodings = db.Column(db.Text)  # JSON array of all encodings combined
+    
+    # Multi-View Encodings (Front, Left Profile, Right Profile)
+    front_encodings = db.Column(db.Text)  # JSON array of front view encodings
+    left_profile_encodings = db.Column(db.Text)  # JSON array of left profile encodings
+    right_profile_encodings = db.Column(db.Text)  # JSON array of right profile encodings
+    video_encodings = db.Column(db.Text)  # JSON array of encodings from video
+    
+    total_encodings = db.Column(db.Integer, default=0)  # Total number of encodings stored
     face_quality_score = db.Column(db.Float, default=0.0)
     age_progression_data = db.Column(db.Text)  # JSON with age features
     
@@ -1245,12 +1253,58 @@ class PersonProfile(db.Model):
     
     @property
     def face_encodings_list(self):
-        """Get face encodings as list"""
+        """Get all face encodings as list"""
         try:
             import json
             return json.loads(self.all_face_encodings) if self.all_face_encodings else []
         except:
             return []
+    
+    @property
+    def front_encodings_list(self):
+        """Get front view encodings as list"""
+        try:
+            import json
+            return json.loads(self.front_encodings) if self.front_encodings else []
+        except:
+            return []
+    
+    @property
+    def left_profile_encodings_list(self):
+        """Get left profile encodings as list"""
+        try:
+            import json
+            return json.loads(self.left_profile_encodings) if self.left_profile_encodings else []
+        except:
+            return []
+    
+    @property
+    def right_profile_encodings_list(self):
+        """Get right profile encodings as list"""
+        try:
+            import json
+            return json.loads(self.right_profile_encodings) if self.right_profile_encodings else []
+        except:
+            return []
+    
+    @property
+    def video_encodings_list(self):
+        """Get video encodings as list"""
+        try:
+            import json
+            return json.loads(self.video_encodings) if self.video_encodings else []
+        except:
+            return []
+    
+    @property
+    def multi_view_profiles(self):
+        """Get multi-view profile dictionary for detection"""
+        return {
+            'front': self.front_encodings_list,
+            'left_profile': self.left_profile_encodings_list,
+            'right_profile': self.right_profile_encodings_list,
+            'video': self.video_encodings_list
+        }
     
     @property
     def dominant_colors_list(self):

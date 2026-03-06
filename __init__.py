@@ -112,24 +112,42 @@ def create_app(config_class=Config):
     from error_handlers import register_error_handlers
     app.register_blueprint(main_bp)
     
-    # Register blueprints with proper error handling
+    # Register blueprints with proper error handling and conflict prevention
     blueprints = [
-        ('admin', 'admin_bp'),
-        ('continuous_learning_routes', 'learning_bp'),
-        ('location_matching_routes', 'location_bp'),
-        ('enhanced_admin_routes', 'enhanced_admin_bp')
+        ('admin', 'admin_bp', '/admin'),
+        ('continuous_learning_routes', 'learning_bp', '/admin/learning'),
+        ('location_matching_routes', 'location_bp', '/admin/location'),
+        ('enhanced_admin_routes', 'enhanced_admin_bp', '/admin/enhanced')
     ]
     
-    for module_name, bp_name in blueprints:
+    registered_endpoints = set()
+    
+    for module_name, bp_name, expected_prefix in blueprints:
         try:
             module = __import__(module_name)
             blueprint = getattr(module, bp_name)
+            
+            # Check for endpoint conflicts before registration
+            blueprint_endpoints = set()
+            for rule in blueprint.url_map.iter_rules() if hasattr(blueprint, 'url_map') else []:
+                endpoint = rule.endpoint
+                if endpoint in registered_endpoints:
+                    print(f"[WARN] Blueprint {bp_name}: Skipping duplicate endpoint {endpoint}")
+                    continue
+                blueprint_endpoints.add(endpoint)
+            
+            # Register blueprint
             app.register_blueprint(blueprint)
+            registered_endpoints.update(blueprint_endpoints)
             print(f"[OK] Blueprint: {bp_name} registered at {blueprint.url_prefix}")
+            
         except ImportError as e:
             print(f"[FAIL] Blueprint {bp_name}: Import failed - {e}")
         except AttributeError as e:
             print(f"[FAIL] Blueprint {bp_name}: Attribute error - {e}")
+        except AssertionError as e:
+            print(f"[FAIL] Blueprint {bp_name}: AssertionError - {e}")
+            # Continue with other blueprints even if one fails
         except Exception as e:
             print(f"[FAIL] Blueprint {bp_name}: {type(e).__name__} - {e}")
     
